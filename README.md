@@ -305,3 +305,41 @@ Once deployed, any change to the circuit (bug fix, optimization, new feature) ch
 **Mitigation:** Design the note format and cryptographic derivations (commitment, nullifier, Merkle leaf) as stable primitives that are independent of the circuit implementation. Circuit changes should only affect how the proof is generated and verified, not what is being proved. Version the proving key and verification key, and support multiple active verification keys on-chain during transition periods.
  
 ---
+
+## Part 4: Critical Guardrails
+ 
+These are invariants that must never be violated. Breaking any of them is a protocol-level security failure.
+ 
+### 4.1 Amount Must Never Be a Public Input in Private Transfer
+ 
+The transfer circuit proves conservation of value (`amount_in == amount_out_1 + amount_out_2`) inside the proof. The amount is a private witness input, never exposed as a public input. If amount appears as a public input in the transfer instruction, privacy is broken at the protocol level. This applies to both EVM and Solana implementations.
+ 
+### 4.2 Nullifier Must Be Deterministic and Unique
+ 
+`Nullifier = Poseidon2(nullifier_preimage, secret, leaf_index)`. This derivation must be deterministic -- the same note must always produce the same nullifier. If the nullifier derivation changes between circuit versions, spent notes could be re-spent. The nullifier set is append-only and permanent.
+ 
+### 4.3 Commitment Scheme Must Be Binding and Hiding
+ 
+The two-layer commitment (Pedersen on Grumpkin for homomorphism, Poseidon2 for Merkle leaf) must satisfy both computational binding (cannot open to two different values) and computational hiding (commitment reveals nothing about the committed value). Pedersen commitments require the discrete log relationship between generator points G and H to be unknown. Document the generator derivation (hash-to-curve from a nothing-up-my-sleeve seed) and never use generators with known discrete log relationships.
+ 
+### 4.4 Merkle Root Validity
+ 
+The on-chain root history must be a circular buffer of recently valid roots (currently 100). A proof is valid if and only if its claimed Merkle root exists in this history. If the buffer is too small, legitimate proofs generated against stale roots will fail. If the buffer is too large, it increases the window for certain timing attacks.
+ 
+### 4.5 Poseidon2 Parameters Are Canonical
+ 
+There is exactly one correct set of Poseidon2 parameters for Shroud. Every component that computes a Poseidon2 hash (circuit gadget, SDK client-side hasher, on-chain Merkle tree updater) must use identical parameters. Define them once, import everywhere, test across all compilation targets.
+ 
+### 4.6 No Cross-Compilation Parameter Drift
+ 
+`shroud-core` compiled to native, WASM, and BPF must produce identical outputs for identical inputs. Field arithmetic implementations can differ across targets (native may use assembly-optimized paths, WASM uses portable Rust), but the mathematical results must be bit-identical. The test suite must run on all three targets and compare outputs.
+ 
+### 4.7 SRS Integrity
+ 
+The KZG Structured Reference String must come from a verifiable ceremony (Aztec's Powers of Tau or equivalent). If the SRS is compromised (the toxic waste is known), an attacker can forge arbitrary proofs. The SRS must be distributed with integrity verification (hash check against a known-good value). Never generate a custom SRS for production use.
+ 
+### 4.8 Lookup Table Completeness
+ 
+Every value that any circuit gate looks up must exist in the corresponding lookup table. A missing entry causes proof generation to fail (correct behavior). An extra entry that should not be in the table could enable range proof bypass (incorrect behavior). Lookup tables must be generated deterministically from the circuit parameters and verified against the proving key.
+ 
+---
