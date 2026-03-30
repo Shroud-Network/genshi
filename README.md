@@ -388,3 +388,25 @@ This ordering matters. Each phase depends on the correctness of the previous one
 - End-to-end integration test: deposit, transfer, withdraw cycle
  
 ---
+
+## Appendix A: What This Document Does Not Cover
+ 
+- Cross-chain bridging between EVM and Solana deployments (explicitly out of scope)
+- Batch insertion and recursive proof aggregation (design-phase only, implement later)
+- Relayer architecture (unchanged from current design)
+- SDK API surface (unchanged, only the underlying prover changes)
+- Token economics and protocol fees
+ 
+## Appendix B: Key External References
+ 
+- Arkworks ecosystem: https://arkworks.rs
+- ark-grumpkin crate: https://crates.io/crates/ark-grumpkin
+- TaceoLabs co-snarks (Rust UltraHonk): https://github.com/TaceoLabs/co-snarks
+- Barretenberg documentation: https://barretenberg.aztec.network/docs
+- PLONK paper: https://eprint.iacr.org/2019/953
+- Plookup paper: https://eprint.iacr.org/2020/315
+- Grumpkin curve specification: https://hackmd.io/@aztec-network/ByzgNxBfd
+ 
+## Appendix C: Constraint Notation
+ 
+All constraint counts in this document are approximate and based on analysis of the current Circom circuits and published benchmarks for equivalent operations in UltraHonk. Actual constraint counts will be determined by the implementation and should be measured via criterion benchmarks in Phase 5.
