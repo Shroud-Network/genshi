@@ -215,3 +215,93 @@ There are two viable paths for the UltraHonk proving machinery itself:
 For client-side priority, Path A is strongly preferred because WASM compilation from pure Rust is clean and well-supported, while C++ FFI adds significant complexity to the browser build pipeline.
  
 ---
+ 
+## Part 3: Implementation Risks and Pitfalls
+ 
+### 3.1 UltraHonk Prover Correctness
+ 
+Implementing UltraHonk's prover from scratch is the single hardest engineering task in this project. The protocol involves a permutation argument (copy constraints), plookup argument (lookup tables), KZG polynomial commitments, Gemini protocol (multilinear reduction), and Shplonk (batch opening). Each component has subtle correctness requirements where a single bug produces proofs that verify but are unsound, meaning an attacker could forge proofs.
+ 
+**Mitigation:** Use TaceoLabs' co-snarks UltraHonk Rust implementation as a reference. Generate test vectors with Barretenberg's C++ implementation and verify shroud-honk produces identical proofs and verification results for the same inputs. Cross-verification against a known-correct implementation is non-negotiable before any deployment.
+ 
+### 3.2 Poseidon2 Parameter Mismatch
+ 
+This is the highest-risk correctness bug in the entire project. Poseidon2 hash outputs are determined by the exact parameters: number of full rounds, number of partial rounds, S-box exponent, MDS matrix, and round constants. If the circuit implementation uses different parameters than the on-chain implementation, all proofs fail silently -- they verify on-chain but against wrong Merkle roots, making legitimate notes unspendable while potentially making forged commitments appear valid.
+ 
+**Mitigation:** Define canonical Poseidon2 parameters once in `shroud-core/crypto/poseidon2.rs`. The circuit gadget, the WASM SDK, and the on-chain contract all import from this single source. Build a dedicated test suite that hashes known inputs and compares outputs across all three compilation targets (native, WASM, BPF) before any other work proceeds. If using Solana's `sol_poseidon` syscall, verify parameter compatibility exhaustively because that syscall implements Poseidon (not Poseidon2), and parameter differences would be catastrophic.
+ 
+### 3.3 Grumpkin Curve Migration Correctness
+ 
+Replacing Baby Jubjub with Grumpkin changes the note format, keypair structure, and commitment scheme. While the protocol logic (deposit, transfer, withdraw, nullifier check, Merkle inclusion) is semantically identical, every cryptographic operation touches different field elements and curve points.
+ 
+**Risks:**
+- Pedersen generator points for Grumpkin must be generated deterministically and documented. Using incorrect or non-standard generators breaks binding or hiding properties.
+- The two-layer commitment design (Pedersen on Grumpkin for homomorphism, Poseidon2 hash for Merkle leaf) must preserve the same security properties as the current Baby Jubjub + Poseidon design.
+- Key derivation changes because Grumpkin has different group order and cofactor properties than Baby Jubjub.
+ 
+**Mitigation:** Write property-based tests verifying that commitment opening, nullifier derivation, and Merkle inclusion proofs behave correctly end-to-end with the new curve before building the full circuit.
+ 
+### 3.4 WASM Performance (Client-Side Priority)
+ 
+The projected 50-100x speedup assumes Rust-native arithmetic compiled to WASM. However, WASM execution in browsers has its own constraints. WASM threads (SharedArrayBuffer) are required for parallel MSM computation but are gated behind Cross-Origin Isolation headers (COOP/COEP), which not all hosting environments support. Without threading, prover performance degrades significantly.
+ 
+**Risks:**
+- Single-threaded WASM may only achieve 10-20x speedup instead of 50-100x.
+- Memory pressure in browser WASM (typically limited to 2-4GB) could cause proving to fail for larger circuits or batch operations.
+- Arkworks' Montgomery form arithmetic is optimized for 64-bit native but may not vectorize efficiently in WASM's 32-bit linear memory model on older browsers.
+ 
+**Mitigation:** Benchmark single-threaded WASM proving early (week 4-5 of the build) with realistic circuit sizes. If single-threaded performance is insufficient, design the SDK to detect SharedArrayBuffer availability and fall back to a server-side prover when threading is unavailable. Profile memory allocation during proving and optimize or stream intermediate polynomial evaluations if heap pressure is excessive.
+ 
+### 3.5 KZG Structured Reference String (SRS) Distribution
+ 
+UltraHonk with KZG requires a Structured Reference String (Powers of Tau) that must be available to every prover. For client-side proving, this SRS must be downloaded to the browser before proof generation can begin.
+ 
+**Risks:**
+- SRS size scales with the maximum supported circuit size. For a 2,500-constraint circuit the SRS is modest (a few MB), but if batch proving or future circuit growth pushes constraints higher, the SRS download becomes a UX bottleneck.
+- The SRS must be loaded into WASM memory, competing with circuit witness and polynomial evaluation memory.
+ 
+**Mitigation:** Use Barretenberg's existing Powers of Tau ceremony output (Aztec's universal setup) rather than running a custom ceremony. Implement lazy SRS loading in the WASM SDK -- download only the SRS points needed for the actual circuit size, not the full ceremony output. Cache the SRS in browser storage (IndexedDB) after first download.
+ 
+### 3.6 Lookup Table Soundness
+ 
+UltraHonk's plookup argument is what makes range proofs and bit decompositions cheap. However, lookup tables must be constructed correctly: every value the circuit looks up must exist in the table, and the table itself must be committed to as part of the proving key. An incorrectly constructed lookup table produces proofs that verify but are unsound.
+ 
+**Risks:**
+- Range proof lookup tables must cover exactly the required bit range (64-bit for amounts). A table that is too small allows values outside the expected range; a table that is too large wastes prover memory.
+- Custom lookup tables for Poseidon2 S-box operations must match the exact S-box polynomial.
+ 
+**Mitigation:** Generate lookup tables deterministically from parameters defined in `shroud-core`. Test that out-of-range values cause proof generation to fail (not succeed silently). Include lookup table verification in the cross-implementation test suite against Barretenberg.
+ 
+### 3.7 Solana UltraHonk Verifier
+ 
+No production UltraHonk verifier exists for Solana. While UltraHonk still uses BN254 pairings (meaning `sol_alt_bn128_*` syscalls apply), the verification equation is different from Groth16's `e(A,B) * e(alpha,beta) * e(vk_x,gamma) * e(C,delta) == 1`.
+ 
+**Risks:**
+- UltraHonk verification involves evaluating committed polynomials at a challenge point and checking a pairing equation that depends on the specific UltraHonk variant (sumcheck-based vs. original). The exact verification equation must match the prover's protocol version.
+- Compute unit budget on Solana for UltraHonk verification is unknown. Groth16 verification via syscalls fits within 1.4M CU. UltraHonk verification may require more pairing operations depending on the protocol variant.
+- The verifier must be compiled to Solana BPF, which has a restricted instruction set and no floating point.
+ 
+**Mitigation:** Implement the verifier in `shroud-core` as pure Rust with `no_std` support. Benchmark compute unit consumption on Solana devnet early. If CU budget is insufficient, evaluate split-verification across multiple transactions or investigate whether a recursive UltraHonk-to-Groth16 wrapper is necessary for on-chain verification.
+ 
+### 3.8 Witness Serialization and Privacy
+ 
+For client-side proving, the witness (containing private keys, amounts, blinding factors, Merkle paths) must be constructed in JavaScript/TypeScript and passed to the WASM prover. The serialization boundary between JS and WASM is a potential information leak surface.
+ 
+**Risks:**
+- Witness data in JavaScript heap is not securely erasable. The JS garbage collector does not guarantee zeroing of deallocated memory.
+- If the WASM module is loaded from a CDN or third-party source, a supply chain attack could exfiltrate witness data.
+- Browser extensions can inspect WASM memory.
+ 
+**Mitigation:** Minimize the time witness data exists in JavaScript memory -- construct and pass to WASM immediately, then overwrite the JS-side buffer. Host the WASM module from the same origin as the application. Document the browser-side privacy limitations clearly to users. For high-security use cases, recommend the native CLI prover.
+ 
+### 3.9 Circuit Upgrade Path
+ 
+Once deployed, any change to the circuit (bug fix, optimization, new feature) changes the proving key, verification key, and the on-chain verifier. Unlike Groth16, UltraHonk's universal setup means no new ceremony is needed, but the verifier contract still needs to be redeployed.
+ 
+**Risks:**
+- Notes created with the old circuit version use the old commitment and nullifier derivation. If the circuit changes alter how commitments or nullifiers are computed, existing notes become unspendable.
+- On-chain verifier upgrade requires a governance or admin mechanism that could be a centralization vector.
+ 
+**Mitigation:** Design the note format and cryptographic derivations (commitment, nullifier, Merkle leaf) as stable primitives that are independent of the circuit implementation. Circuit changes should only affect how the proof is generated and verified, not what is being proved. Version the proving key and verification key, and support multiple active verification keys on-chain during transition periods.
+ 
+---
