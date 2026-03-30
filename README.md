@@ -58,3 +58,160 @@ The Solana build is starting from scratch with an unresolved conflict: the initi
 If the EVM deployment migrates to Grumpkin for commitments (required for UltraHonk to eliminate wrong-field overhead) but the Solana deployment stays on Baby Jubjub for syscall compatibility, cross-chain note portability becomes impossible without a translation layer. Every cryptographic stack decision made now either opens or closes the door on future cross-chain interoperability.
  
 ---
+
+## Part 2: The Solution -- shroud-honk
+ 
+### 2.1 Core Thesis
+ 
+Instead of patching the current stack layer by layer, build one cohesive Rust-native proving implementation that targets all critical problems simultaneously. One codebase, one architecture, addressing proving speed, system architecture, wrong-field arithmetic, tree structure, and setup overhead in a single coordinated effort.
+ 
+### 2.2 Architecture Overview
+ 
+shroud-honk is a Rust library crate (not a binary) built on the Arkworks ecosystem, implementing UltraHonk arithmetization with Shroud-specific circuits. It compiles to three targets from the same source: browser WASM for client-side proving, Solana BPF for on-chain verification, and native binary for server-side proving.
+ 
+The priority is client-side proving and verification. The entire design optimizes for browser WASM performance first, with server-side proving as a secondary target for fallback and batch operations.
+ 
+### 2.3 Technical Decisions
+ 
+**Proving system: UltraHonk (PLONK-family with lookup tables)**
+ 
+UltraHonk uses plookup-based lookup tables that make range checks and bit decompositions dramatically cheaper than R1CS. It uses a universal KZG setup (one Powers of Tau ceremony, never repeated). The arithmetization supports custom gates beyond simple addition and multiplication, enabling more efficient circuit designs for domain-specific operations like Poseidon hashing and Pedersen commitments.
+ 
+**No Noir.** Noir is explicitly excluded due to language instability, frequent breaking changes, and painful circuit-level debugging. Circuits are written directly in Rust using a constraint builder API.
+ 
+**Commitment curve: Grumpkin, replacing Baby Jubjub**
+ 
+Grumpkin is BN254's cycle partner -- its scalar field equals BN254's base field and vice versa. Inside a BN254 UltraHonk proof, Grumpkin arithmetic is native rather than emulated. Scalar multiplications drop from approximately 700 constraints to approximately 50. Pedersen commitments drop from approximately 1,400 constraints to approximately 100.
+ 
+The `ark-grumpkin` crate (v0.5.0) is published on crates.io with 250,000+ downloads, dual-licensed MIT/Apache, and maintained as part of the Arkworks algebra library.
+ 
+**Hash function: Poseidon2**
+ 
+Poseidon2 has a simpler round structure than Poseidon, making it both faster to compute natively and cheaper in constraints. Barretenberg already implements Poseidon2 as a native black box function. The migration from Poseidon to Poseidon2 changes hash outputs but not protocol semantics.
+ 
+**Tree structure: 4-ary Poseidon2 Merkle tree, depth 10**
+ 
+A 4-ary tree at depth 10 covers 1,048,576 leaves (identical capacity to the current binary tree at depth 20) while halving the number of hash operations per Merkle proof. Each node hashes 4 inputs instead of 2, which costs more per hash, but the 50% depth reduction more than compensates. Net constraint reduction for Merkle paths: approximately 5,000 to approximately 1,500-2,000.
+ 
+### 2.4 Projected Constraint Reduction
+ 
+| Constraint Group | Current (Circom/Groth16) | New (Rust/UltraHonk) | Reduction |
+|---|---|---|---|
+| Ownership (scalar mul) | ~700 | ~50 (Grumpkin native) | 93% |
+| Input Pedersen | ~1,400 | ~100 (Grumpkin native) | 93% |
+| Note commitment | ~250 | ~150 (Poseidon2) | 40% |
+| Merkle proof | ~5,000 | ~1,500 (4-ary depth 10, Poseidon2) | 70% |
+| Nullifier | ~250 | ~150 (Poseidon2) | 40% |
+| Conservation checks | 2 | 2 | 0% |
+| Range proofs | ~384 | ~50 (lookup table) | 87% |
+| Output Pedersen x2 | ~2,800 | ~200 (Grumpkin native) | 93% |
+| Output commitments x2 | ~500 | ~300 (Poseidon2) | 40% |
+| **Total** | **~25,133** | **~2,500** | **~90%** |
+ 
+Combined with UltraHonk's faster per-constraint prover performance and Rust-native WASM (Montgomery form arithmetic vs snarkjs bignum), the expected total speedup is 50-100x. Target: minutes to under 5 seconds client-side, under 2 seconds server-side.
+ 
+### 2.5 Note Structure (New Format)
+ 
+The protocol logic is identical to the current design. The only changes are the curve (Baby Jubjub to Grumpkin), the hash function (Poseidon to Poseidon2), and the tree arity (binary to 4-ary).
+ 
+```
+Note {
+    amount: u64
+    blinding: GrumpkinScalar           // random, Pedersen hiding factor
+    secret: GrumpkinScalar             // random, owner-only knowledge
+    nullifier_preimage: GrumpkinScalar // random, never appears on-chain
+    owner_public_key: GrumpkinPoint    // owner's public key on Grumpkin
+    leaf_index: u64                    // position in Merkle tree
+}
+ 
+NoteCommitment {
+    // Layer 1: Grumpkin Pedersen (now native in BN254 UltraHonk)
+    pedersen: GrumpkinPoint            // C = amount*G + blinding*H on Grumpkin
+ 
+    // Layer 2: Poseidon2 hash (goes into 4-ary Merkle tree)
+    commitment: BN254Scalar            // Poseidon2(C.x, C.y, secret, nullifier_preimage, pk.x)
+}
+ 
+Nullifier {
+    hash: BN254Scalar                  // Poseidon2(nullifier_preimage, secret, leaf_index)
+}
+```
+ 
+### 2.6 Crate Architecture
+ 
+```
+shroud-honk/                          -- Cargo workspace root
++-- crates/
+|   +-- shroud-core/                  -- lib crate, no_std compatible
+|   |   +-- src/
+|   |   |   +-- lib.rs
+|   |   |   +-- arithmetization/
+|   |   |   |   +-- ultra_circuit_builder.rs
+|   |   |   |   +-- lookup_tables.rs
+|   |   |   |   +-- witness.rs
+|   |   |   +-- crypto/
+|   |   |   |   +-- fields/
+|   |   |   |   |   +-- bn254_scalar.rs
+|   |   |   |   |   +-- bn254_base.rs
+|   |   |   |   +-- curves/
+|   |   |   |   |   +-- bn254.rs
+|   |   |   |   |   +-- grumpkin.rs
+|   |   |   |   +-- poseidon2.rs
+|   |   |   |   +-- pedersen.rs
+|   |   |   +-- circuits/
+|   |   |   |   +-- gadgets/
+|   |   |   |   |   +-- merkle.rs
+|   |   |   |   |   +-- nullifier.rs
+|   |   |   |   |   +-- note_commitment.rs
+|   |   |   |   |   +-- range_proof.rs
+|   |   |   |   +-- transfer.rs
+|   |   |   |   +-- withdraw.rs
+|   |   |   +-- proving/
+|   |   |   |   +-- prover.rs
+|   |   |   |   +-- verifier.rs
+|   |   |   |   +-- kzg.rs
+|   |   |   |   +-- srs.rs
+|   |   |   +-- note.rs
+|   |   +-- Cargo.toml
+|   +-- shroud-wasm/                  -- cdylib crate, browser SDK
+|   |   +-- src/lib.rs                -- #[wasm_bindgen] exports
+|   +-- shroud-solana/                -- Anchor program
+|   |   +-- src/crypto/mod.rs         -- re-exports shroud-core verifier
+|   +-- shroud-cli/                   -- dev tooling only, never deployed
+|       +-- src/main.rs
++-- Cargo.toml
++-- benches/
+    +-- transfer_proof.rs
+```
+ 
+The critical architectural constraint: `shroud-core` must be `no_std` compatible. This is what enables the same crate to compile for Solana's BPF target (no standard library), browser WASM, and native server binaries.
+ 
+### 2.7 Dependencies
+ 
+```toml
+[dependencies]
+ark-bn254 = "0.5"
+ark-grumpkin = "0.5"
+ark-ff = "0.5"
+ark-ec = "0.5"
+ark-poly = "0.5"
+ark-std = { version = "0.5", default-features = false }
+ark-poly-commit = "0.5"
+ark-serialize = "0.5"
+ 
+[features]
+default = ["std"]
+std = ["ark-std/std", "ark-ff/std", "ark-ec/std"]
+```
+ 
+### 2.8 Implementation Path Options
+ 
+There are two viable paths for the UltraHonk proving machinery itself:
+ 
+**Path A: Pure Rust implementation.** Build the UltraHonk prover and verifier from scratch using Arkworks primitives. This gives full ownership and `no_std` compatibility across all targets. The TaceoLabs co-snarks project already contains a Rust rewrite of UltraHonk compatible with Barretenberg proof formats, which can serve as a reference or be forked and stripped of its MPC components. This is the preferred path for long-term independence.
+ 
+**Path B: Barretenberg FFI hybrid.** Shroud's circuits and cryptographic primitives in pure Rust, UltraHonk proving machinery from Barretenberg's C++ library via FFI bindings (`barretenberg-rs` crate). Faster to ship, gets correctness from a battle-tested prover. Tradeoff: C++ dependency complicates Solana BPF compilation and introduces build complexity.
+ 
+For client-side priority, Path A is strongly preferred because WASM compilation from pure Rust is clean and well-supported, while C++ FFI adds significant complexity to the browser build pipeline.
+ 
+---
