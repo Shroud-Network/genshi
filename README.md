@@ -343,3 +343,48 @@ The KZG Structured Reference String must come from a verifiable ceremony (Aztec'
 Every value that any circuit gate looks up must exist in the corresponding lookup table. A missing entry causes proof generation to fail (correct behavior). An extra entry that should not be in the table could enable range proof bypass (incorrect behavior). Lookup tables must be generated deterministically from the circuit parameters and verified against the proving key.
  
 ---
+
+## Part 5: Build Sequence
+ 
+This ordering matters. Each phase depends on the correctness of the previous one.
+ 
+**Phase 1 (Week 1-2): Crypto Primitives**
+- Poseidon2 over BN254 scalar field with canonical parameters
+- Grumpkin Pedersen commitment with documented generator derivation
+- Test: hash outputs match reference vectors from Barretenberg
+- Test: commitment opens correctly, binding and hiding properties hold
+- Test: all outputs identical across native, WASM, and BPF targets
+ 
+**Phase 2 (Week 2-3): Constraint System**
+- UltraCircuitBuilder (gate types, witness assignment, lookup table support)
+- Plookup table construction for range proofs (64-bit)
+- Test: manually constructed circuits produce valid witnesses
+- Test: lookup table rejects out-of-range values
+ 
+**Phase 3 (Week 3-4): Gadgets**
+- 4-ary Poseidon2 Merkle tree gadget
+- Nullifier derivation gadget
+- Note commitment gadget (Grumpkin Pedersen + Poseidon2)
+- Range proof gadget via lookup table
+- Test: each gadget in isolation with known inputs and outputs
+ 
+**Phase 4 (Week 4-5): KZG and UltraHonk Prover/Verifier**
+- SRS loading from Aztec's Powers of Tau
+- KZG polynomial commitment implementation
+- UltraHonk proof generation and verification
+- Test: prove and verify a trivial circuit end-to-end
+- Test: cross-verify proofs against Barretenberg/TaceoLabs reference implementation
+ 
+**Phase 5 (Week 5-7): Full Circuits**
+- Compose gadgets into Transfer and Withdraw circuits
+- Test: full prove/verify cycle with real note data
+- Benchmark: criterion benchmarks for proving time (native and WASM)
+- Memory profiling for WASM target
+ 
+**Phase 6 (Week 7-8): Integration Targets**
+- WASM build with wasm-bindgen exports for browser SDK
+- Solana BPF build for on-chain verifier
+- Native server prover binary
+- End-to-end integration test: deposit, transfer, withdraw cycle
+ 
+---
