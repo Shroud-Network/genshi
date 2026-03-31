@@ -225,3 +225,17 @@ std = ["ark-std/std", "ark-ff/std", "ark-ec/std"]
 **Proving side is 100% shared. SDK is 100% shared. Only on-chain contracts differ.**
 
 ---
+
+## 9. Implementation Path
+
+**Preferred: Path A -- Pure Rust implementation.**
+- Build UltraHonk prover/verifier from scratch on Arkworks
+- Reference: TaceoLabs co-snarks (Rust UltraHonk compatible with Barretenberg proof format)
+- Full ownership, clean `no_std` and WASM compilation
+- No C++ FFI dependency
+
+**Fallback: Path B -- Barretenberg FFI hybrid.**
+- Shroud circuits in pure Rust, UltraHonk proving via Barretenberg C++ FFI
+- Faster to ship but complicates Solana BPF and browser WASM builds
+
+---
