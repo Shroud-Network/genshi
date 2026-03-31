@@ -187,3 +187,23 @@ shroud-honk/                              -- Cargo workspace root
 `shroud-core` **must be `no_std` compatible** -- this is what enables compilation to Solana BPF, browser WASM, and native targets from the same crate.
 
 ---
+
+## 7. Dependencies
+
+```toml
+[dependencies]
+ark-bn254 = "0.5"
+ark-grumpkin = "0.5"
+ark-ff = "0.5"
+ark-ec = "0.5"
+ark-poly = "0.5"
+ark-std = { version = "0.5", default-features = false }
+ark-poly-commit = "0.5"
+ark-serialize = "0.5"
+
+[features]
+default = ["std"]
+std = ["ark-std/std", "ark-ff/std", "ark-ec/std"]
+```
+
+---
