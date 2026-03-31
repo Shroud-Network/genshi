@@ -364,3 +364,26 @@ Each phase depends on correctness of the previous phase.
 - [ ] Full integration test: deposit -> transfer -> withdraw on both VMs
 
 ---
+
+## 13. External References
+
+| Resource | URL |
+|---|---|
+| Arkworks ecosystem | https://arkworks.rs |
+| ark-grumpkin crate | https://crates.io/crates/ark-grumpkin |
+| TaceoLabs co-snarks (Rust UltraHonk) | https://github.com/TaceoLabs/co-snarks |
+| Barretenberg docs | https://barretenberg.aztec.network/docs |
+| PLONK paper | https://eprint.iacr.org/2019/953 |
+| Plookup paper | https://eprint.iacr.org/2020/315 |
+| Grumpkin curve spec | https://hackmd.io/@aztec-network/ByzgNxBfd |
+
+---
+
+## 14. Out of Scope
+
+- Cross-chain bridging between EVM and Solana
+- Batch insertion / recursive proof aggregation (design-phase only)
+- Relayer architecture (unchanged)
+- SDK API surface (unchanged; only underlying prover changes)
+- Token economics and protocol fees
+- ShieldedPool migration on existing EVM testnet (new deployment, not upgrade)
