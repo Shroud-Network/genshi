@@ -239,3 +239,22 @@ std = ["ark-std/std", "ark-ff/std", "ark-ec/std"]
 - Faster to ship but complicates Solana BPF and browser WASM builds
 
 ---
+
+## 10. Critical Guardrails (Security Invariants)
+
+These are **non-negotiable**. Violation = protocol-level security failure.
+
+| # | Invariant | Detail |
+|---|---|---|
+| G1 | Amount is never a public input in private transfer | Conservation proved inside the proof; amount is private witness only |
+| G2 | Nullifier is deterministic and unique | `Poseidon2(nullifier_preimage, secret, leaf_index)` -- same note = same nullifier always |
+| G3 | Commitment scheme is binding and hiding | Pedersen generators G, H must have unknown discrete log relationship |
+| G4 | Merkle root validity | Circular buffer of recent valid roots (100); proof valid iff root in history |
+| G5 | Poseidon2 parameters are canonical | One parameter set, imported everywhere, tested across all compilation targets |
+| G6 | No cross-compilation parameter drift | `shroud-core` native/WASM/BPF must produce bit-identical outputs for identical inputs |
+| G7 | One proof format, both VMs | Same proof bytes verify on EVM and Solana; keccak transcript on both chains |
+| G8 | EVM precompile compatibility | Solidity verifier uses only ecAdd/ecMul/ecPairing/modexp -- no chain-specific opcodes |
+| G9 | SRS integrity | Must come from verifiable ceremony (Aztec PoT); never generate custom SRS for production |
+| G10 | Lookup table completeness | Every looked-up value must exist in table; no extra entries that enable range bypass |
+
+---
