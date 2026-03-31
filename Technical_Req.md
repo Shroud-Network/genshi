@@ -67,3 +67,45 @@
 - Lazy SRS loading in WASM SDK; cache in IndexedDB after first download
 
 ---
+
+## 4. Cryptographic Specifications
+
+### 4.1 Note Structure
+
+```
+Note {
+    amount: u64
+    blinding: GrumpkinScalar             // random, Pedersen hiding factor
+    secret: GrumpkinScalar               // random, owner-only knowledge
+    nullifier_preimage: GrumpkinScalar   // random, never appears on-chain
+    owner_public_key: GrumpkinPoint      // owner's public key on Grumpkin
+    leaf_index: u64                      // position in Merkle tree
+}
+```
+
+### 4.2 Note Commitment (Two-Layer)
+
+```
+Layer 1 -- Grumpkin Pedersen (native in BN254 UltraHonk):
+    C = amount * G + blinding * H    (on Grumpkin curve)
+
+Layer 2 -- Poseidon2 hash (goes into 4-ary Merkle tree):
+    commitment = Poseidon2(C.x, C.y, secret, nullifier_preimage, pk.x)
+```
+
+### 4.3 Nullifier Derivation
+
+```
+nullifier = Poseidon2(nullifier_preimage, secret, leaf_index)
+```
+
+- Must be deterministic: same note always produces same nullifier
+- Nullifier set is append-only and permanent
+
+### 4.4 Pedersen Generators
+- G and H on Grumpkin curve
+- Derived via hash-to-curve from a nothing-up-my-sleeve seed
+- Discrete log relationship between G and H must be unknown
+- Derivation must be documented
+
+---
