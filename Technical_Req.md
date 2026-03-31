@@ -109,3 +109,22 @@ nullifier = Poseidon2(nullifier_preimage, secret, leaf_index)
 - Derivation must be documented
 
 ---
+
+## 5. Constraint Budget
+
+| Group | Current (Circom/Groth16) | Target (Rust/UltraHonk) | Reduction |
+|---|---|---|---|
+| Ownership (scalar mul) | ~700 | ~50 (Grumpkin native) | 93% |
+| Input Pedersen | ~1,400 | ~100 (Grumpkin native) | 93% |
+| Note commitment | ~250 | ~150 (Poseidon2) | 40% |
+| Merkle proof | ~5,000 | ~1,500 (4-ary depth 10) | 70% |
+| Nullifier | ~250 | ~150 (Poseidon2) | 40% |
+| Conservation checks | 2 | 2 | 0% |
+| Range proofs | ~384 | ~50 (lookup table) | 87% |
+| Output Pedersen x2 | ~2,800 | ~200 (Grumpkin native) | 93% |
+| Output commitments x2 | ~500 | ~300 (Poseidon2) | 40% |
+| **Total** | **~25,133** | **~2,500** | **~90%** |
+
+**Performance target:** minutes -> under 5s client-side, under 2s server-side (50-100x speedup).
+
+---
