@@ -258,3 +258,60 @@ These are **non-negotiable**. Violation = protocol-level security failure.
 | G10 | Lookup table completeness | Every looked-up value must exist in table; no extra entries that enable range bypass |
 
 ---
+
+## 11. Implementation Risks & Mitigations
+
+### R1: UltraHonk Prover Correctness (HIGH)
+- Permutation argument, plookup, KZG commits, Gemini, Shplonk -- subtle correctness requirements
+- **Mitigation:** Cross-verify all proofs against Barretenberg/TaceoLabs reference; identical outputs required
+
+### R2: Poseidon2 Parameter Mismatch (HIGHEST)
+- Wrong parameters = silent failure (proofs verify against wrong Merkle roots)
+- **Mitigation:** Single source of truth in `shroud-core/crypto/poseidon2.rs`; test hash outputs across native/WASM/BPF
+- **Warning:** Solana `sol_poseidon` syscall implements Poseidon (not Poseidon2) -- parameter compatibility must be verified exhaustively
+
+### R3: Grumpkin Migration Correctness
+- Different field elements, curve points, group order, cofactor vs Baby Jubjub
+- Pedersen generators must be deterministic hash-to-curve from NUMS seed
+- **Mitigation:** Property-based tests for commitment opening, nullifier derivation, Merkle inclusion before building full circuit
+
+### R4: WASM Performance
+- SharedArrayBuffer required for parallel MSM; gated behind COOP/COEP headers
+- Single-threaded WASM may only hit 10-20x speedup (not 50-100x)
+- Browser WASM memory limit ~2-4GB
+- **Mitigation:** Benchmark single-threaded WASM in Phase 4-5; fallback to server-side prover if threading unavailable
+
+### R5: KZG SRS Distribution
+- SRS must be downloaded to browser before proving
+- Size scales with max circuit size (~few MB for 2,500 constraints)
+- **Mitigation:** Lazy loading, IndexedDB caching, download only points needed for actual circuit size
+
+### R6: Lookup Table Soundness
+- Incorrect tables produce verifiable but unsound proofs
+- **Mitigation:** Deterministic generation from circuit params; test that out-of-range values fail proof generation
+
+### R7: Solana UltraHonk Verifier (HIGH)
+- No production UltraHonk verifier exists for Solana yet
+- CU budget unknown; Groth16 fits in 1.4M CU but UltraHonk may need more
+- **Mitigation:** Implement in `shroud-core` as pure `no_std` Rust; benchmark CU on devnet early; consider split-verification or recursive wrapper if CU exceeds budget
+
+### R8: EVM Verifier Migration
+- Existing Avalanche Fuji deployment uses Groth16; must migrate to UltraHonk
+- Existing testnet notes are NOT portable (curve and hash both changing)
+- ~300-500K gas (1.5-2.5x Groth16); acceptable on Avalanche, watch for L1 Ethereum
+- **Mitigation:** Use Barretenberg's Solidity verifier generation as reference; deploy on Fuji first
+
+### R9: Dual-VM Proof Consistency
+- Public input encoding differs: Solidity (big-endian, left-padded 32B) vs Solana Rust (little-endian field elements)
+- **Mitigation:** Canonical public input serialization in `shroud-core`; per-chain encoding functions in respective crates
+
+### R10: Witness Serialization & Privacy
+- JS heap not securely erasable; browser extensions can inspect WASM memory
+- **Mitigation:** Minimize witness lifetime in JS; host WASM from same origin; document limitations; recommend native CLI for high-security
+
+### R11: Circuit Upgrade Path
+- Circuit changes = new proving key, verification key, and on-chain verifier
+- Note format and crypto derivations must be stable primitives independent of circuit
+- **Mitigation:** Version vkeys; support multiple active vkeys on-chain during transitions
+
+---
