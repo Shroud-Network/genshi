@@ -128,3 +128,62 @@ nullifier = Poseidon2(nullifier_preimage, secret, leaf_index)
 **Performance target:** minutes -> under 5s client-side, under 2s server-side (50-100x speedup).
 
 ---
+
+## 6. Crate Architecture
+
+```
+shroud-honk/                              -- Cargo workspace root
++-- crates/
+|   +-- shroud-core/                      -- lib crate, no_std compatible
+|   |   +-- src/
+|   |   |   +-- lib.rs
+|   |   |   +-- arithmetization/
+|   |   |   |   +-- ultra_circuit_builder.rs
+|   |   |   |   +-- lookup_tables.rs
+|   |   |   |   +-- witness.rs
+|   |   |   +-- crypto/
+|   |   |   |   +-- fields/
+|   |   |   |   |   +-- bn254_scalar.rs
+|   |   |   |   |   +-- bn254_base.rs
+|   |   |   |   +-- curves/
+|   |   |   |   |   +-- bn254.rs
+|   |   |   |   |   +-- grumpkin.rs
+|   |   |   |   +-- poseidon2.rs
+|   |   |   |   +-- pedersen.rs
+|   |   |   +-- circuits/
+|   |   |   |   +-- gadgets/
+|   |   |   |   |   +-- merkle.rs
+|   |   |   |   |   +-- nullifier.rs
+|   |   |   |   |   +-- note_commitment.rs
+|   |   |   |   |   +-- range_proof.rs
+|   |   |   |   +-- transfer.rs
+|   |   |   |   +-- withdraw.rs
+|   |   |   +-- proving/
+|   |   |   |   +-- prover.rs
+|   |   |   |   +-- verifier.rs            -- pure Rust verifier (Solana BPF target)
+|   |   |   |   +-- kzg.rs
+|   |   |   |   +-- srs.rs
+|   |   |   +-- note.rs
+|   |   +-- Cargo.toml
+|   +-- shroud-wasm/                      -- cdylib crate, browser SDK
+|   |   +-- src/lib.rs                    -- #[wasm_bindgen] exports
+|   +-- shroud-evm/                       -- EVM verifier generation
+|   |   +-- src/
+|   |   |   +-- solidity_emitter.rs       -- generates Verifier.sol from vkey
+|   |   |   +-- templates/                -- Solidity verifier template
+|   |   +-- contracts/
+|   |   |   +-- ShieldedPool.sol
+|   |   +-- Cargo.toml
+|   +-- shroud-solana/                    -- Anchor program
+|   |   +-- src/crypto/mod.rs             -- re-exports shroud-core verifier
+|   +-- shroud-cli/                       -- dev tooling only
+|       +-- src/main.rs
++-- Cargo.toml
++-- benches/
+    +-- transfer_proof.rs
+```
+
+### Critical Constraint
+`shroud-core` **must be `no_std` compatible** -- this is what enables compilation to Solana BPF, browser WASM, and native targets from the same crate.
+
+---
