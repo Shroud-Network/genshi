@@ -315,3 +315,52 @@ These are **non-negotiable**. Violation = protocol-level security failure.
 - **Mitigation:** Version vkeys; support multiple active vkeys on-chain during transitions
 
 ---
+
+## 12. Build Sequence (Phased)
+
+Each phase depends on correctness of the previous phase.
+
+### Phase 1: Crypto Primitives (Week 1-2)
+- [ ] Poseidon2 over BN254 scalar field with canonical parameters
+- [ ] Grumpkin Pedersen commitment with documented generator derivation
+- [ ] Test: hash outputs match Barretenberg reference vectors
+- [ ] Test: commitment opens correctly; binding/hiding properties hold
+- [ ] Test: all outputs identical across native, WASM, BPF targets
+
+### Phase 2: Constraint System (Week 2-3)
+- [ ] `UltraCircuitBuilder` (gate types, witness assignment, lookup table support)
+- [ ] Plookup table construction for range proofs (64-bit)
+- [ ] Test: manually constructed circuits produce valid witnesses
+- [ ] Test: lookup table rejects out-of-range values
+
+### Phase 3: Gadgets (Week 3-4)
+- [ ] 4-ary Poseidon2 Merkle tree gadget
+- [ ] Nullifier derivation gadget
+- [ ] Note commitment gadget (Grumpkin Pedersen + Poseidon2)
+- [ ] Range proof gadget via lookup table
+- [ ] Test: each gadget in isolation with known inputs/outputs
+
+### Phase 4: KZG & UltraHonk Prover/Verifier (Week 4-5)
+- [ ] SRS loading from Aztec's Powers of Tau
+- [ ] KZG polynomial commitment implementation
+- [ ] UltraHonk proof generation and verification
+- [ ] Test: prove/verify trivial circuit end-to-end
+- [ ] Test: cross-verify proofs against Barretenberg/TaceoLabs
+
+### Phase 5: Full Circuits (Week 5-7)
+- [ ] Compose gadgets into Transfer and Withdraw circuits
+- [ ] Test: full prove/verify cycle with real note data
+- [ ] Benchmark: criterion benchmarks (native and WASM proving time)
+- [ ] Memory profiling for WASM target
+
+### Phase 6: Integration & Dual-VM Verification (Week 7-9)
+- [ ] WASM build with `wasm-bindgen` exports for browser SDK
+- [ ] Solana BPF build for on-chain verifier (`sol_alt_bn128_*` syscalls)
+- [ ] Solidity verifier generation from vkey (adapt Barretenberg template)
+- [ ] Deploy Solidity verifier on Avalanche Fuji; verify end-to-end
+- [ ] Deploy Solana verifier on devnet; verify end-to-end
+- [ ] Cross-VM proof test: one WASM proof, verify on both EVM and Solana
+- [ ] Native server prover binary
+- [ ] Full integration test: deposit -> transfer -> withdraw on both VMs
+
+---
