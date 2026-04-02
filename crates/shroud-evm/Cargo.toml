@@ -1,0 +1,10 @@
+[package]
+name = "shroud-evm"
+description = "EVM verifier generation for shroud-honk — Solidity contracts using BN254 precompiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+shroud-core = { workspace = true }
