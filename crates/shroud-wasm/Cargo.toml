@@ -1,0 +1,13 @@
+[package]
+name = "shroud-wasm"
+description = "Browser WASM SDK for shroud-honk proving — shared across EVM and Solana"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+shroud-core = { path = "../shroud-core", default-features = false }
