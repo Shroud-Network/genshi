@@ -1,2 +1,23 @@
-/target
+# Cargo build artifacts
+/target/
+**/target/
+
+# Generated files
+*.generated.sol
+*.srs
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
 Cargo.lock

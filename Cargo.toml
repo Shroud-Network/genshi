@@ -1,6 +1,33 @@
-[package]
-name = "shroudZK"
+[workspace]
+members = [
+    "crates/shroud-core",
+    "crates/shroud-wasm",
+    "crates/shroud-evm",
+    "crates/shroud-solana",
+    "crates/shroud-cli",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85.0"
+license = "MIT OR Apache-2.0"
 
-[dependencies]
+[workspace.dependencies]
+# Arkworks ecosystem (v0.5.0)
+ark-bn254 = "0.5"
+ark-grumpkin = "0.5"
+ark-ff = "0.5"
+ark-ec = "0.5"
+ark-poly = "0.5"
+ark-std = { version = "0.5", default-features = false }
+ark-poly-commit = "0.5"
+ark-serialize = "0.5"
+
+# Internal crates
+shroud-core = { path = "crates/shroud-core" }
+
+# Testing & utilities
+rand = "0.8"
+sha2 = "0.10"
