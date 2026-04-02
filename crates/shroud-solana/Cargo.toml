@@ -1,0 +1,10 @@
+[package]
+name = "shroud-solana"
+description = "Solana Anchor program for shroud-honk on-chain verification via sol_alt_bn128_* syscalls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+shroud-core = { path = "../shroud-core", default-features = false }
