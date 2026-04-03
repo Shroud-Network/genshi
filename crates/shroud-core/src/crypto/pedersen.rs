@@ -26,8 +26,8 @@
 //!   knowing the discrete log of G relative to H
 
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{Field, PrimeField};
-use ark_grumpkin::{Affine as GrumpkinAffine, Projective as GrumpkinProjective};
+use ark_ff::PrimeField;
+use ark_grumpkin::Affine as GrumpkinAffine;
 
 /// Grumpkin scalar type (= BN254 base field Fq).
 type GrumpkinScalar = ark_bn254::Fq;
