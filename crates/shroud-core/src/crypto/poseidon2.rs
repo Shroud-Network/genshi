@@ -23,7 +23,7 @@
 //! - Compatible with TaceoLabs/Barretenberg Poseidon2 over BN254
 
 use ark_bn254::Fr;
-use ark_ff::{AdditiveGroup, Field, One, PrimeField, Zero};
+use ark_ff::{AdditiveGroup, Field, PrimeField, Zero};
 use alloc::vec::Vec;
 
 // ============================================================================
@@ -40,7 +40,7 @@ const RF_HALF_END: usize = 4;
 const RF: usize = RF_HALF + RF_HALF_END;
 
 /// S-box exponent: x^5 (alpha = 5).
-const ALPHA: u64 = 5;
+const _ALPHA: u64 = 5;
 
 // ============================================================================
 // Poseidon2 Internal Linear Layer Matrices
@@ -54,12 +54,15 @@ const ALPHA: u64 = 5;
 
 /// Internal diagonal elements for t=3 (used in partial rounds).
 /// From the Poseidon2 paper Table 2 for BN254.
+#[allow(dead_code)]
 const INTERNAL_DIAG_T3: [u64; 3] = [1, 1, 2];
 
 /// Internal diagonal elements for t=4.
+#[allow(dead_code)]
 const INTERNAL_DIAG_T4: [u64; 4] = [1, 1, 2, 3];
 
 /// Internal diagonal elements for t=5.
+#[allow(dead_code)]
 const INTERNAL_DIAG_T5: [u64; 5] = [1, 1, 2, 3, 4];
 
 // ============================================================================
