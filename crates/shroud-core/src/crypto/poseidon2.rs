@@ -31,13 +31,13 @@ use alloc::vec::Vec;
 // ============================================================================
 
 /// Number of full rounds at the beginning.
-const RF_HALF: usize = 4;
+pub(crate) const RF_HALF: usize = 4;
 
 /// Number of full rounds at the end.
-const RF_HALF_END: usize = 4;
+pub(crate) const RF_HALF_END: usize = 4;
 
 /// Total full rounds.
-const RF: usize = RF_HALF + RF_HALF_END;
+pub(crate) const RF: usize = RF_HALF + RF_HALF_END;
 
 /// S-box exponent: x^5 (alpha = 5).
 const _ALPHA: u64 = 5;
@@ -173,7 +173,7 @@ fn internal_linear_layer_t5(state: &mut [Fr; 5]) {
 
 /// Generate round constants deterministically from a domain separator.
 /// This uses SHA-256 in counter mode to produce field elements.
-fn generate_round_constants(domain: &[u8], count: usize) -> Vec<Fr> {
+pub(crate) fn generate_round_constants(domain: &[u8], count: usize) -> Vec<Fr> {
     use sha2::{Sha256, Digest};
     
     let mut constants = Vec::with_capacity(count);
@@ -198,7 +198,7 @@ fn generate_round_constants(domain: &[u8], count: usize) -> Vec<Fr> {
 // ============================================================================
 
 /// Number of partial rounds for a given state size.
-fn partial_rounds(t: usize) -> usize {
+pub(crate) fn partial_rounds(t: usize) -> usize {
     match t {
         2 => 56,
         3 => 56,
