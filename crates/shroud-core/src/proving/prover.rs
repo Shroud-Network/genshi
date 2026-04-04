@@ -57,8 +57,11 @@ pub struct Proof {
 
     // Round 4: Evaluations at ζ
     pub w_evals: [Fr; 4],
-    pub sigma_evals: [Fr; 3], // σ₁(ζ), σ₂(ζ), σ₃(ζ) (σ₄ not needed)
+    pub sigma_evals: [Fr; 4], // σ₁(ζ), σ₂(ζ), σ₃(ζ), σ₄(ζ)
+    pub z_eval: Fr,           // z(ζ)
     pub z_omega_eval: Fr,     // z(ζω)
+    pub selector_evals: [Fr; 7], // q_m, q_1, q_2, q_3, q_4, q_c, q_arith at ζ
+    pub t_eval: Fr,           // t(ζ) = Σ t_i(ζ) · ζ^(i·n)
 
     // Round 5: Opening witnesses
     pub w_zeta: G1Affine,       // batch opening at ζ
@@ -239,13 +242,14 @@ fn preprocess(
     let mut wire_var_ids: Vec<[u32; 4]> = vec![[0; 4]; n];
 
     // Fill public input rows (rows 0..num_public)
-    // Each PI row: q_1 = 1, w_1 = PI value, everything else 0
-    // Gate equation: 1·w_1 + q_c = 0, so q_c = -PI value
+    // Gate equation at PI rows: q_1·w_1 + PI(X) = 0
+    // PI(X) is computed by the verifier as -Σ pi_i·L_i(X)
+    // So the gate becomes: w_1 - pi_value = 0 (verified by constraint check)
     for (row, &pi_wire) in builder.get_public_inputs().iter().enumerate() {
         let pi_val = builder.get_variable(pi_wire);
         wire_evals[0][row] = pi_val;
         q_1_evals[row] = Fr::one();
-        q_c_evals[row] = -pi_val;
+        // q_c stays 0 — PI contribution added by verifier
         q_arith_evals[row] = Fr::one();
         wire_var_ids[row][0] = pi_wire.0;
     }
@@ -475,9 +479,31 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
         kzg::evaluate_poly(&pd.sigmas[0], zeta),
         kzg::evaluate_poly(&pd.sigmas[1], zeta),
         kzg::evaluate_poly(&pd.sigmas[2], zeta),
+        kzg::evaluate_poly(&pd.sigmas[3], zeta),
     ];
 
+    let z_eval = kzg::evaluate_poly(&z_coeffs, zeta);
     let z_omega_eval = kzg::evaluate_poly(&z_coeffs, zeta_omega);
+
+    let selector_evals = [
+        kzg::evaluate_poly(&pd.q_m, zeta),
+        kzg::evaluate_poly(&pd.q_1, zeta),
+        kzg::evaluate_poly(&pd.q_2, zeta),
+        kzg::evaluate_poly(&pd.q_3, zeta),
+        kzg::evaluate_poly(&pd.q_4, zeta),
+        kzg::evaluate_poly(&pd.q_c, zeta),
+        kzg::evaluate_poly(&pd.q_arith, zeta),
+    ];
+
+    // Compute t(ζ) = Σ t_i(ζ) · ζ^(i·n)
+    let n = pd.domain_size;
+    let zeta_n = zeta.pow([n as u64]);
+    let mut t_eval = Fr::zero();
+    let mut zeta_pow = Fr::one();
+    for part in &t_parts {
+        t_eval += kzg::evaluate_poly(part, zeta) * zeta_pow;
+        zeta_pow *= zeta_n;
+    }
 
     // Absorb evaluations
     for e in &w_evals {
@@ -486,7 +512,12 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
     for e in &sigma_evals {
         transcript.absorb_scalar(b"se", e);
     }
+    transcript.absorb_scalar(b"ze", &z_eval);
     transcript.absorb_scalar(b"zw", &z_omega_eval);
+    for e in &selector_evals {
+        transcript.absorb_scalar(b"qe", e);
+    }
+    transcript.absorb_scalar(b"te", &t_eval);
 
     // ================================================================
     // Round 5: Opening proofs
@@ -496,7 +527,7 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
     // Collect all polynomials to open at ζ
     let polys_at_zeta: Vec<&[Fr]> = vec![
         &w_coeffs[0], &w_coeffs[1], &w_coeffs[2], &w_coeffs[3],
-        &pd.sigmas[0], &pd.sigmas[1], &pd.sigmas[2],
+        &pd.sigmas[0], &pd.sigmas[1], &pd.sigmas[2], &pd.sigmas[3],
         &pd.q_m, &pd.q_1, &pd.q_2, &pd.q_3, &pd.q_4, &pd.q_c, &pd.q_arith,
         &z_coeffs,
     ];
@@ -513,7 +544,10 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
         t_comms,
         w_evals,
         sigma_evals,
+        z_eval,
         z_omega_eval,
+        selector_evals,
+        t_eval,
         w_zeta,
         w_zeta_omega,
     };
@@ -616,11 +650,16 @@ fn compute_quotient(
         let s3 = kzg::evaluate_poly(&pd.sigmas[2], x);
         let s4 = kzg::evaluate_poly(&pd.sigmas[3], x);
 
-        // Public input polynomial PI(x) - handled via q_c in preprocessing
-        // (PI values are baked into q_c for public input rows)
+        // Public input polynomial PI(x) = -Σ pi_val_i · L_i(x)
+        let mut pi_x = Fr::zero();
+        for pi_row in 0..pd.num_public_inputs {
+            let pi_val = pd.wire_evals[0][pi_row]; // w1 at PI row = PI value
+            let li = lagrange_eval(pi_row, x, omega, n);
+            pi_x -= pi_val * li;
+        }
 
-        // Gate identity
-        let gate = qa * (qm * w1 * w2 + q1 * w1 + q2 * w2 + q3 * w3 + q4 * w4 + qc);
+        // Gate identity (includes PI)
+        let gate = qa * (qm * w1 * w2 + q1 * w1 + q2 * w2 + q3 * w3 + q4 * w4 + qc) + pi_x;
 
         // Permutation identity
         let k = &pd.k;
@@ -682,6 +721,7 @@ fn compute_quotient(
 mod tests {
     use super::*;
     use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+    use ark_ec::AffineRepr;
 
     #[test]
     fn test_compute_omega() {
