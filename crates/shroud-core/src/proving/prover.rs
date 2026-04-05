@@ -112,27 +112,13 @@ struct ProvingData {
 }
 
 // ============================================================================
-// Domain Utilities (minimal NTT-free for correctness)
+// Domain Utilities — Radix-2 FFT (Cooley-Tukey), O(n log n)
 // ============================================================================
-
-/// Compute the n-th roots of unity: [1, ω, ω², ..., ω^(n-1)].
-fn roots_of_unity(n: usize) -> Vec<Fr> {
-    let omega = compute_omega(n);
-    let mut roots = Vec::with_capacity(n);
-    let mut w = Fr::one();
-    for _ in 0..n {
-        roots.push(w);
-        w *= omega;
-    }
-    roots
-}
 
 /// Compute a primitive n-th root of unity for BN254 scalar field.
 /// n must be a power of 2.
 fn compute_omega(n: usize) -> Fr {
     assert!(n.is_power_of_two(), "Domain size must be power of 2");
-    // BN254 Fr supports 2-adicity of 28 (2^28 | r-1).
-    // Get the 2^28-th root of unity and square down.
     let two_adic_root = Fr::TWO_ADIC_ROOT_OF_UNITY;
     let log_n = n.trailing_zeros();
     assert!(log_n <= 28, "Domain size exceeds BN254 2-adicity");
@@ -140,55 +126,87 @@ fn compute_omega(n: usize) -> Fr {
     for _ in log_n..28 {
         omega = omega * omega;
     }
-    // Verify: ω^n = 1
     debug_assert_eq!(omega.pow([n as u64]), Fr::one());
     omega
 }
 
-/// Interpolate: given evaluations at roots of unity, compute coefficients.
-/// This is a simple O(n²) iFFT for correctness.
-fn ifft(evals: &[Fr], omega: Fr, n: usize) -> Vec<Fr> {
-    let omega_inv = omega.inverse().expect("omega must be invertible");
-    let n_inv = Fr::from(n as u64).inverse().expect("n must be invertible");
+/// Radix-2 Cooley-Tukey FFT. O(n log n).
+///
+/// Evaluates polynomial (coefficient form) at all n-th roots of unity.
+fn fft(coeffs: &[Fr], omega: Fr, n: usize) -> Vec<Fr> {
+    assert!(n.is_power_of_two());
+    let mut a = coeffs.to_vec();
+    a.resize(n, Fr::zero());
 
-    let mut coeffs = vec![Fr::zero(); n];
-    for j in 0..n {
-        let mut sum = Fr::zero();
-        let mut omega_inv_pow = Fr::one(); // ω^(-ij)
-        for i in 0..n {
-            sum += evals[i] * omega_inv_pow;
-            omega_inv_pow *= omega_inv.pow([j as u64]);
+    // Bit-reversal permutation
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
         }
-        coeffs[j] = sum * n_inv;
+        j ^= bit;
+        if i < j {
+            a.swap(i, j);
+        }
     }
 
-    // Fix: use the standard DFT formula
-    let mut coeffs2 = vec![Fr::zero(); n];
-    for j in 0..n {
-        let mut sum = Fr::zero();
-        let mut w = Fr::one();
-        let omega_inv_j = omega_inv.pow([j as u64]);
-        for i in 0..n {
-            sum += evals[i] * w;
-            w *= omega_inv_j;
+    // Butterfly stages
+    let mut len = 2;
+    while len <= n {
+        let w_len = omega.pow([(n / len) as u64]);
+        let half = len / 2;
+        let mut i = 0;
+        while i < n {
+            let mut w = Fr::one();
+            for k in 0..half {
+                let u = a[i + k];
+                let v = a[i + k + half] * w;
+                a[i + k] = u + v;
+                a[i + k + half] = u - v;
+                w *= w_len;
+            }
+            i += len;
         }
-        coeffs2[j] = sum * n_inv;
+        len <<= 1;
     }
-    coeffs2
+    a
 }
 
-/// Evaluate polynomial (coefficient form) at all roots of unity.
-/// O(n²) DFT for correctness.
-fn fft(coeffs: &[Fr], omega: Fr, n: usize) -> Vec<Fr> {
-    let mut padded = coeffs.to_vec();
-    padded.resize(n, Fr::zero());
-
-    let mut evals = vec![Fr::zero(); n];
-    for i in 0..n {
-        let x = omega.pow([i as u64]);
-        evals[i] = kzg::evaluate_poly(&padded, x);
+/// Inverse FFT. O(n log n).
+fn ifft(evals: &[Fr], omega: Fr, n: usize) -> Vec<Fr> {
+    let omega_inv = omega.inverse().expect("omega invertible");
+    let mut coeffs = fft(evals, omega_inv, n);
+    let n_inv = Fr::from(n as u64).inverse().expect("n invertible");
+    for c in &mut coeffs {
+        *c *= n_inv;
     }
-    evals
+    coeffs
+}
+
+/// Evaluate polynomial on coset `{g · ω^i}`. O(n log n).
+fn coset_fft(coeffs: &[Fr], omega: Fr, n: usize, g: Fr) -> Vec<Fr> {
+    let mut shifted = coeffs.to_vec();
+    shifted.resize(n, Fr::zero());
+    let mut g_pow = Fr::one();
+    for c in &mut shifted {
+        *c *= g_pow;
+        g_pow *= g;
+    }
+    fft(&shifted, omega, n)
+}
+
+/// Recover coefficients from evaluations on coset `{g · ω^i}`. O(n log n).
+fn coset_ifft(evals: &[Fr], omega: Fr, n: usize, g: Fr) -> Vec<Fr> {
+    let mut coeffs = ifft(evals, omega, n);
+    let g_inv = g.inverse().expect("coset offset invertible");
+    let mut g_pow = Fr::one();
+    for c in &mut coeffs {
+        *c *= g_pow;
+        g_pow *= g_inv;
+    }
+    coeffs
 }
 
 /// Compute the i-th Lagrange basis polynomial evaluated at x:
@@ -599,12 +617,16 @@ fn compute_grand_product(
 
 /// Compute the quotient polynomial t(X) = numerator(X) / Z_H(X).
 ///
-/// numerator = gate_identity + α·perm_identity + α²·boundary_identity
+/// Uses coset FFT for O(n log n) performance:
+/// 1. Evaluate all polynomials on a 4n coset via coset_fft
+/// 2. Compute numerator in evaluation form (element-wise)
+/// 3. Divide by Z_H pointwise
+/// 4. Recover t(X) via coset_ifft
 fn compute_quotient(
     w_coeffs: &[Vec<Fr>; 4],
     pd: &ProvingData,
     z_coeffs: &[Fr],
-    z_evals: &[Fr],
+    _z_evals: &[Fr],
     alpha: Fr,
     beta: Fr,
     gamma: Fr,
@@ -612,98 +634,105 @@ fn compute_quotient(
     n: usize,
 ) -> Vec<Fr> {
     let alpha_sq = alpha * alpha;
-
-    // We'll compute the numerator at 4n evaluation points (a coset)
-    // to handle degree overflow, then divide by Z_H.
     let big_n = 4 * n;
     let big_omega = compute_omega(big_n);
-    // Use a coset offset
-    let coset_offset = Fr::from(3u64); // arbitrary non-root-of-unity
+    let g = Fr::from(3u64); // coset offset (non-root-of-unity)
 
-    // Evaluate all polynomials at coset points: {offset · big_ω^i}
-    let mut numerator_evals = vec![Fr::zero(); big_n];
+    // Step 1: Evaluate all polynomials on the 4n coset via coset_fft
+    let w1_c = coset_fft(&w_coeffs[0], big_omega, big_n, g);
+    let w2_c = coset_fft(&w_coeffs[1], big_omega, big_n, g);
+    let w3_c = coset_fft(&w_coeffs[2], big_omega, big_n, g);
+    let w4_c = coset_fft(&w_coeffs[3], big_omega, big_n, g);
 
+    let qm_c = coset_fft(&pd.q_m, big_omega, big_n, g);
+    let q1_c = coset_fft(&pd.q_1, big_omega, big_n, g);
+    let q2_c = coset_fft(&pd.q_2, big_omega, big_n, g);
+    let q3_c = coset_fft(&pd.q_3, big_omega, big_n, g);
+    let q4_c = coset_fft(&pd.q_4, big_omega, big_n, g);
+    let qc_c = coset_fft(&pd.q_c, big_omega, big_n, g);
+    let qa_c = coset_fft(&pd.q_arith, big_omega, big_n, g);
+
+    let z_c = coset_fft(z_coeffs, big_omega, big_n, g);
+
+    let s1_c = coset_fft(&pd.sigmas[0], big_omega, big_n, g);
+    let s2_c = coset_fft(&pd.sigmas[1], big_omega, big_n, g);
+    let s3_c = coset_fft(&pd.sigmas[2], big_omega, big_n, g);
+    let s4_c = coset_fft(&pd.sigmas[3], big_omega, big_n, g);
+
+    // z(ω·x) on the coset: since ω = big_omega^4, evaluating z at
+    // g·big_omega^(i+4) = rotating the coset evaluations by 4
+    let mut z_omega_c = vec![Fr::zero(); big_n];
     for i in 0..big_n {
-        let x = coset_offset * big_omega.pow([i as u64]);
-        let x_n = x.pow([n as u64]);
-        let zh = x_n - Fr::one(); // Z_H(x)
+        z_omega_c[i] = z_c[(i + 4) % big_n];
+    }
 
-        // Evaluate all base polynomials at x
-        let w1 = kzg::evaluate_poly(&w_coeffs[0], x);
-        let w2 = kzg::evaluate_poly(&w_coeffs[1], x);
-        let w3 = kzg::evaluate_poly(&w_coeffs[2], x);
-        let w4 = kzg::evaluate_poly(&w_coeffs[3], x);
+    // PI(X) = -Σ pi_val_i · L_i(X): build via iFFT then coset_fft
+    let mut pi_domain_evals = vec![Fr::zero(); n];
+    for i in 0..pd.num_public_inputs {
+        pi_domain_evals[i] = -pd.wire_evals[0][i];
+    }
+    let pi_coeffs = ifft(&pi_domain_evals, omega, n);
+    let pi_c = coset_fft(&pi_coeffs, big_omega, big_n, g);
 
-        let qm = kzg::evaluate_poly(&pd.q_m, x);
-        let q1 = kzg::evaluate_poly(&pd.q_1, x);
-        let q2 = kzg::evaluate_poly(&pd.q_2, x);
-        let q3 = kzg::evaluate_poly(&pd.q_3, x);
-        let q4 = kzg::evaluate_poly(&pd.q_4, x);
-        let qc = kzg::evaluate_poly(&pd.q_c, x);
-        let qa = kzg::evaluate_poly(&pd.q_arith, x);
+    // L_1(X) = (X^n - 1) / (n · (X - 1)): build from its domain evals
+    // L_1(ω^i) = 1 if i=0, else 0
+    let mut l1_domain_evals = vec![Fr::zero(); n];
+    l1_domain_evals[0] = Fr::one();
+    let l1_coeffs = ifft(&l1_domain_evals, omega, n);
+    let l1_c = coset_fft(&l1_coeffs, big_omega, big_n, g);
 
-        let z_x = kzg::evaluate_poly(z_coeffs, x);
-        let z_wx = kzg::evaluate_poly(z_coeffs, x * omega);
-
-        let s1 = kzg::evaluate_poly(&pd.sigmas[0], x);
-        let s2 = kzg::evaluate_poly(&pd.sigmas[1], x);
-        let s3 = kzg::evaluate_poly(&pd.sigmas[2], x);
-        let s4 = kzg::evaluate_poly(&pd.sigmas[3], x);
-
-        // Public input polynomial PI(x) = -Σ pi_val_i · L_i(x)
-        let mut pi_x = Fr::zero();
-        for pi_row in 0..pd.num_public_inputs {
-            let pi_val = pd.wire_evals[0][pi_row]; // w1 at PI row = PI value
-            let li = lagrange_eval(pi_row, x, omega, n);
-            pi_x -= pi_val * li;
+    // Precompute coset x-values: x_i = g · big_omega^i
+    // and Z_H(x_i) = x_i^n - 1
+    // Also need x_i for the permutation numerator: β·k_j·x
+    let mut x_c = vec![Fr::zero(); big_n];
+    let mut zh_c = vec![Fr::zero(); big_n];
+    {
+        let mut x_val = g; // g · big_omega^0 = g
+        for i in 0..big_n {
+            x_c[i] = x_val;
+            zh_c[i] = x_val.pow([n as u64]) - Fr::one();
+            x_val *= big_omega;
         }
+    }
 
-        // Gate identity (includes PI)
-        let gate = qa * (qm * w1 * w2 + q1 * w1 + q2 * w2 + q3 * w3 + q4 * w4 + qc) + pi_x;
+    // Step 2: Compute quotient in evaluation form
+    let k = &pd.k;
+    let mut t_evals = vec![Fr::zero(); big_n];
+    for i in 0..big_n {
+        let x = x_c[i];
+
+        // Gate identity
+        let gate = qa_c[i]
+            * (qm_c[i] * w1_c[i] * w2_c[i]
+                + q1_c[i] * w1_c[i]
+                + q2_c[i] * w2_c[i]
+                + q3_c[i] * w3_c[i]
+                + q4_c[i] * w4_c[i]
+                + qc_c[i])
+            + pi_c[i];
 
         // Permutation identity
-        let k = &pd.k;
-        let perm_num =
-            z_x * (w1 + beta * k[0] * x + gamma)
-                * (w2 + beta * k[1] * x + gamma)
-                * (w3 + beta * k[2] * x + gamma)
-                * (w4 + beta * k[3] * x + gamma);
+        let perm_num = z_c[i]
+            * (w1_c[i] + beta * k[0] * x + gamma)
+            * (w2_c[i] + beta * k[1] * x + gamma)
+            * (w3_c[i] + beta * k[2] * x + gamma)
+            * (w4_c[i] + beta * k[3] * x + gamma);
 
-        let perm_den =
-            z_wx * (w1 + beta * s1 + gamma)
-                * (w2 + beta * s2 + gamma)
-                * (w3 + beta * s3 + gamma)
-                * (w4 + beta * s4 + gamma);
+        let perm_den = z_omega_c[i]
+            * (w1_c[i] + beta * s1_c[i] + gamma)
+            * (w2_c[i] + beta * s2_c[i] + gamma)
+            * (w3_c[i] + beta * s3_c[i] + gamma)
+            * (w4_c[i] + beta * s4_c[i] + gamma);
 
-        let perm = perm_num - perm_den;
+        // Boundary
+        let boundary = l1_c[i] * (z_c[i] - Fr::one());
 
-        // Boundary: L₁(x) · (z(x) - 1)
-        let l1 = lagrange_eval(0, x, omega, n);
-        let boundary = l1 * (z_x - Fr::one());
-
-        // Full numerator
-        let num_x = gate + alpha * perm + alpha_sq * boundary;
-
-        // Quotient at this point
-        numerator_evals[i] = num_x * zh.inverse().expect("Z_H should not vanish on coset");
+        let numerator = gate + alpha * (perm_num - perm_den) + alpha_sq * boundary;
+        t_evals[i] = numerator * zh_c[i].inverse().expect("Z_H non-zero on coset");
     }
 
-    // iFFT the quotient evaluations from the coset back to coefficient form
-    // t(coset_offset · big_ω^i) = numerator_evals[i]
-    // So t(X) can be recovered by shifting: let Y = X/coset_offset,
-    // t(coset_offset · Y) evaluated at Y = big_ω^i
-    // This means: t'(Y) = t(coset_offset·Y), and t'_coeffs from iFFT,
-    // then t_coeffs[j] = t'_coeffs[j] / coset_offset^j
-
-    let t_shifted = ifft(&numerator_evals, big_omega, big_n);
-
-    let mut t_coeffs = vec![Fr::zero(); big_n];
-    let coset_inv = coset_offset.inverse().expect("coset offset invertible");
-    let mut coset_pow = Fr::one();
-    for j in 0..big_n {
-        t_coeffs[j] = t_shifted[j] * coset_pow;
-        coset_pow *= coset_inv;
-    }
+    // Step 3: Recover t(X) in coefficient form via coset iFFT
+    let mut t_coeffs = coset_ifft(&t_evals, big_omega, big_n, g);
 
     // Trim trailing zeros
     while t_coeffs.last() == Some(&Fr::zero()) && t_coeffs.len() > 1 {
