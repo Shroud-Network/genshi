@@ -20,6 +20,11 @@ sha2 = { workspace = true }
 [dev-dependencies]
 rand = { workspace = true }
 ark-std = { version = "0.5", features = ["std"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "transfer_proof"
+harness = false
 
 [features]
 default = ["std"]
