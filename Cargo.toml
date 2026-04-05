@@ -31,3 +31,4 @@ shroud-core = { path = "crates/shroud-core" }
 # Testing & utilities
 rand = "0.8"
 sha2 = "0.10"
+criterion = "0.5"
