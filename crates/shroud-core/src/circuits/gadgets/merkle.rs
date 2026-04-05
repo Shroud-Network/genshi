@@ -84,11 +84,10 @@ pub fn merkle_inclusion_gadget(
 // ============================================================================
 
 
-/// Compute a 4-ary Merkle root from leaves (native, for testing).
+/// Compute a 4-ary Merkle root from leaves (native computation).
 ///
 /// Pads with zeros if `leaves.len()` is not a power of 4.
-#[cfg(test)]
-fn compute_merkle_root(leaves: &[Fr]) -> Fr {
+pub fn compute_merkle_root(leaves: &[Fr]) -> Fr {
     use ark_ff::Zero;
     use crate::crypto::poseidon2;
     use alloc::vec::Vec;
@@ -115,9 +114,8 @@ fn compute_merkle_root(leaves: &[Fr]) -> Fr {
     layer[0]
 }
 
-/// Generate a Merkle path for a given leaf index (native, for testing).
-#[cfg(test)]
-fn generate_merkle_path(leaves: &[Fr], leaf_index: usize, depth: usize) -> MerklePath {
+/// Generate a Merkle path for a given leaf index (native computation).
+pub fn generate_merkle_path(leaves: &[Fr], leaf_index: usize, depth: usize) -> MerklePath {
     use ark_ff::Zero;
     use crate::crypto::poseidon2;
     use alloc::vec::Vec;
