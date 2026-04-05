@@ -163,7 +163,7 @@ impl Note {
 ///
 /// Since both fields have similar (but not identical) orders, we convert
 /// via the canonical byte representation, reducing mod Fr's order.
-fn grumpkin_scalar_to_fr(val: GrumpkinScalar) -> Fr {
+pub fn grumpkin_scalar_to_fr(val: GrumpkinScalar) -> Fr {
     let bytes = val.into_bigint().to_bytes_le();
     Fr::from_le_bytes_mod_order(&bytes)
 }
