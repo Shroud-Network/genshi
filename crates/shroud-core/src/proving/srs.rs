@@ -10,9 +10,10 @@
 //! For WASM: lazy loading + IndexedDB caching (Phase 6).
 //! Download only the SRS points needed for actual circuit size.
 
-use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Fr, G1Affine, G2Affine};
 use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{One, PrimeField};
+use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
 use alloc::vec::Vec;
 
 /// Structured Reference String for KZG polynomial commitments.
@@ -98,6 +99,74 @@ impl SRS {
             g2_tau: self.g2_tau,
         }
     }
+
+    /// Serialize the SRS to bytes.
+    ///
+    /// Layout:
+    /// - `num_g1_points`: 4 bytes (u32 LE)
+    /// - `g1_powers`: num_g1_points x 64 bytes (uncompressed)
+    /// - `g2`: 128 bytes (uncompressed G2)
+    /// - `g2_tau`: 128 bytes (uncompressed G2)
+    pub fn save_to_bytes(&self) -> Vec<u8> {
+        let n = self.g1_powers.len();
+        let mut buf = Vec::with_capacity(4 + n * 64 + 256);
+
+        buf.extend_from_slice(&(n as u32).to_le_bytes());
+        for p in &self.g1_powers {
+            let mut point_buf = Vec::new();
+            p.serialize_uncompressed(&mut point_buf)
+                .expect("G1 serialization should not fail");
+            buf.extend_from_slice(&point_buf);
+        }
+
+        let mut g2_buf = Vec::new();
+        self.g2.serialize_uncompressed(&mut g2_buf)
+            .expect("G2 serialization should not fail");
+        buf.extend_from_slice(&g2_buf);
+
+        let mut g2_tau_buf = Vec::new();
+        self.g2_tau.serialize_uncompressed(&mut g2_tau_buf)
+            .expect("G2 serialization should not fail");
+        buf.extend_from_slice(&g2_tau_buf);
+
+        buf
+    }
+
+    /// Deserialize the SRS from bytes.
+    pub fn load_from_bytes(bytes: &[u8]) -> Self {
+        assert!(bytes.len() >= 4, "SRS bytes too short");
+        let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        let mut offset = 4;
+
+        let g1_size = {
+            // Uncompressed G1: check actual size by serializing the generator
+            let mut tmp = Vec::new();
+            G1Affine::generator().serialize_uncompressed(&mut tmp).unwrap();
+            tmp.len()
+        };
+        let g2_size = {
+            let mut tmp = Vec::new();
+            G2Affine::generator().serialize_uncompressed(&mut tmp).unwrap();
+            tmp.len()
+        };
+
+        let mut g1_powers = Vec::with_capacity(n);
+        for _ in 0..n {
+            let p = G1Affine::deserialize_uncompressed(&bytes[offset..offset + g1_size])
+                .expect("G1 deserialization failed");
+            g1_powers.push(p);
+            offset += g1_size;
+        }
+
+        let g2 = G2Affine::deserialize_uncompressed(&bytes[offset..offset + g2_size])
+            .expect("G2 deserialization failed");
+        offset += g2_size;
+
+        let g2_tau = G2Affine::deserialize_uncompressed(&bytes[offset..offset + g2_size])
+            .expect("G2 tau deserialization failed");
+
+        Self { g1_powers, g2, g2_tau }
+    }
 }
 
 // ============================================================================
@@ -155,5 +224,24 @@ mod tests {
         for p in &srs.g1_powers {
             assert!(!p.is_zero(), "SRS point should not be identity");
         }
+    }
+
+    #[test]
+    fn test_srs_save_load_roundtrip() {
+        let srs = SRS::insecure_for_testing(16);
+        let bytes = srs.save_to_bytes();
+        let srs2 = SRS::load_from_bytes(&bytes);
+
+        assert_eq!(srs.g1_powers, srs2.g1_powers, "G1 powers must match");
+        assert_eq!(srs.g2, srs2.g2, "G2 must match");
+        assert_eq!(srs.g2_tau, srs2.g2_tau, "G2 tau must match");
+    }
+
+    #[test]
+    fn test_srs_bytes_deterministic() {
+        let srs = SRS::insecure_for_testing(8);
+        let bytes1 = srs.save_to_bytes();
+        let bytes2 = srs.save_to_bytes();
+        assert_eq!(bytes1, bytes2, "Same SRS must produce same bytes");
     }
 }
