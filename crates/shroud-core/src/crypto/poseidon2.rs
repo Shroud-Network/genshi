@@ -173,7 +173,7 @@ fn internal_linear_layer_t5(state: &mut [Fr; 5]) {
 
 /// Generate round constants deterministically from a domain separator.
 /// This uses SHA-256 in counter mode to produce field elements.
-pub(crate) fn generate_round_constants(domain: &[u8], count: usize) -> Vec<Fr> {
+pub fn generate_round_constants(domain: &[u8], count: usize) -> Vec<Fr> {
     use sha2::{Sha256, Digest};
     
     let mut constants = Vec::with_capacity(count);
