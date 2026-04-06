@@ -18,3 +18,4 @@ pub mod arithmetization;
 pub mod circuits;
 pub mod proving;
 pub mod note;
+pub mod witness;
