@@ -32,3 +32,7 @@ shroud-core = { path = "crates/shroud-core" }
 rand = "0.8"
 sha2 = "0.10"
 criterion = "0.5"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
