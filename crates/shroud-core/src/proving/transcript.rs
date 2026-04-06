@@ -1,39 +1,37 @@
 //! Fiat-Shamir transcript for UltraHonk.
 //!
-//! Uses SHA-256 in a streaming absorb/squeeze pattern to convert
+//! Uses Keccak-256 in a streaming absorb/squeeze pattern to convert
 //! an interactive proof protocol into a non-interactive one.
 //!
-//! **GUARDRAIL G7**: The transcript encoding is deterministic and
-//! platform-independent. The same proof produces the same challenges
-//! on native, WASM, and Solana BPF — enabling ONE proof format for
-//! both EVM and Solana verification.
+//! **GUARDRAIL G7**: Keccak is the native EVM hash opcode (21 gas) and
+//! ensures the same transcript can be reconstructed cheaply on-chain.
+//! The transcript encoding is deterministic and platform-independent.
+//! The same proof produces the same challenges on native, WASM, and
+//! Solana BPF — enabling ONE proof format for both EVM and Solana.
 //!
 //! # Protocol
 //!
 //! ```text
 //! 1. Initialize with domain separator
 //! 2. Absorb public inputs, commitments, evaluations
-//! 3. Squeeze challenges (α, β, γ, etc.)
+//! 3. Squeeze challenges (alpha, beta, gamma, etc.)
 //! ```
 //!
 //! Each squeeze resets the hasher state to prevent state reuse attacks.
 
 use ark_bn254::{Fr, G1Affine};
 use ark_ff::PrimeField;
-use ark_ec::AffineRepr;
 use ark_serialize::CanonicalSerialize;
-use sha2::{Sha256, Digest};
+use tiny_keccak::{Hasher, Keccak};
 use alloc::vec::Vec;
 
-/// Fiat-Shamir transcript using SHA-256.
+/// Fiat-Shamir transcript using Keccak-256.
 ///
 /// Accumulates protocol messages (field elements, group elements, bytes)
 /// and derives verifier challenges deterministically.
 pub struct Transcript {
-    /// Running SHA-256 state.
-    hasher: Sha256,
-    /// Buffer of all absorbed data (for transcript reconstruction by verifier).
-    buffer: Vec<u8>,
+    /// Running state: accumulated bytes to be hashed on next squeeze.
+    state: Vec<u8>,
 }
 
 impl Transcript {
@@ -42,25 +40,21 @@ impl Transcript {
     /// The domain separator ensures transcripts for different protocols
     /// don't collide, even if they share the same structure.
     pub fn new(domain_separator: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
+        let mut state = Vec::new();
         // Absorb domain separator with length prefix
-        hasher.update((domain_separator.len() as u32).to_le_bytes());
-        hasher.update(domain_separator);
-        Self {
-            hasher,
-            buffer: Vec::new(),
-        }
+        state.extend_from_slice(&(domain_separator.len() as u32).to_le_bytes());
+        state.extend_from_slice(domain_separator);
+        Self { state }
     }
 
     /// Absorb raw bytes into the transcript.
     pub fn absorb_bytes(&mut self, label: &[u8], data: &[u8]) {
         // Label prefix for domain separation within the transcript
-        self.hasher.update((label.len() as u32).to_le_bytes());
-        self.hasher.update(label);
+        self.state.extend_from_slice(&(label.len() as u32).to_le_bytes());
+        self.state.extend_from_slice(label);
         // Data with length prefix
-        self.hasher.update((data.len() as u32).to_le_bytes());
-        self.hasher.update(data);
-        self.buffer.extend_from_slice(data);
+        self.state.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        self.state.extend_from_slice(data);
     }
 
     /// Absorb a scalar field element (BN254 Fr).
@@ -98,20 +92,23 @@ impl Transcript {
 
     /// Squeeze a challenge scalar from the transcript.
     ///
-    /// This finalizes the current hash state, extracts a challenge,
-    /// then re-initializes the hasher with the previous output as seed.
-    /// This "chain" construction prevents state reuse.
+    /// This hashes all accumulated state with the squeeze label via Keccak-256,
+    /// then re-seeds the state with the hash output (chaining construction).
     pub fn squeeze_challenge(&mut self, label: &[u8]) -> Fr {
-        // Add the squeeze label
-        self.hasher.update(b"squeeze");
-        self.hasher.update((label.len() as u32).to_le_bytes());
-        self.hasher.update(label);
+        // Add the squeeze label to differentiate squeeze calls
+        self.state.extend_from_slice(b"squeeze");
+        self.state.extend_from_slice(&(label.len() as u32).to_le_bytes());
+        self.state.extend_from_slice(label);
 
-        // Finalize and get hash
-        let hash = self.hasher.finalize_reset();
+        // Hash the entire accumulated state with Keccak-256
+        let mut keccak = Keccak::v256();
+        keccak.update(&self.state);
+        let mut hash = [0u8; 32];
+        keccak.finalize(&mut hash);
 
-        // Re-seed the hasher with the output (chaining)
-        self.hasher.update(&hash);
+        // Re-seed the state with the hash output (chaining)
+        self.state.clear();
+        self.state.extend_from_slice(&hash);
 
         // Convert 32-byte hash to field element via modular reduction
         Fr::from_be_bytes_mod_order(&hash)
@@ -128,10 +125,10 @@ impl Transcript {
         challenges
     }
 
-    /// Get the accumulated transcript buffer (for debugging/verification).
+    /// Get the accumulated transcript state (for debugging/verification).
     #[allow(dead_code)]
     pub fn get_buffer(&self) -> &[u8] {
-        &self.buffer
+        &self.state
     }
 }
 
@@ -202,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_absorb_point() {
-        use ark_ec::CurveGroup;
+        use ark_ec::AffineRepr;
         let g1_gen = G1Affine::generator();
 
         let mut t1 = Transcript::new(b"test");
