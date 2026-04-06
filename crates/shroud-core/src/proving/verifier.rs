@@ -225,6 +225,167 @@ pub fn verify(
 }
 
 // ============================================================================
+// Verification intermediates for external pairing (Solana syscalls)
+// ============================================================================
+
+/// Intermediate values from verification Steps 1-3, ready for pairing.
+///
+/// This allows Solana BPF programs to use `sol_alt_bn128_pairing` syscalls
+/// instead of computing pairings in Rust (which would exceed CU budget).
+#[derive(Clone, Debug)]
+pub struct VerificationIntermediates {
+    /// Batch KZG: left-hand side G1 point for pairing 1
+    pub batch_lhs: G1Affine,
+    /// Batch KZG: -W_zeta (negated opening witness)
+    pub batch_neg_w: G1Affine,
+    /// z opening: left-hand side G1 point for pairing 2
+    pub z_lhs: G1Affine,
+    /// z opening: -W_zeta_omega (negated opening witness)
+    pub z_neg_w: G1Affine,
+    /// Challenge zeta for computing G2 RHS
+    pub zeta: Fr,
+    /// Challenge zeta * omega
+    pub zeta_omega: Fr,
+}
+
+/// Compute verification intermediates without performing pairing checks.
+///
+/// Returns `Some(intermediates)` if the constraint equation passes,
+/// `None` if the constraint equation fails.
+///
+/// The caller must perform two pairing checks:
+/// 1. `e(batch_lhs, G2) * e(batch_neg_w, tau*G2 - zeta*G2) == 1`
+/// 2. `e(z_lhs, G2) * e(z_neg_w, tau*G2 - zeta_omega*G2) == 1`
+pub fn verify_prepare(
+    proof: &Proof,
+    vk: &VerificationKey,
+    public_inputs: &[Fr],
+) -> Option<VerificationIntermediates> {
+    assert_eq!(public_inputs.len(), vk.num_public_inputs);
+
+    let n = vk.domain_size;
+    let omega = vk.omega;
+
+    // Step 1: Reconstruct Fiat-Shamir challenges (same as verify())
+    let mut transcript = Transcript::new(b"shroud_ultrahonk");
+    for c in &proof.w_comms {
+        transcript.absorb_point(b"w", c);
+    }
+    let beta = transcript.squeeze_challenge(b"beta");
+    let gamma = transcript.squeeze_challenge(b"gamma");
+    transcript.absorb_point(b"z", &proof.z_comm);
+    let alpha = transcript.squeeze_challenge(b"alpha");
+    for c in &proof.t_comms {
+        transcript.absorb_point(b"t", c);
+    }
+    let zeta = transcript.squeeze_challenge(b"zeta");
+    let zeta_omega = zeta * omega;
+
+    for e in &proof.w_evals { transcript.absorb_scalar(b"we", e); }
+    for e in &proof.sigma_evals { transcript.absorb_scalar(b"se", e); }
+    transcript.absorb_scalar(b"ze", &proof.z_eval);
+    transcript.absorb_scalar(b"zw", &proof.z_omega_eval);
+    for e in &proof.selector_evals { transcript.absorb_scalar(b"qe", e); }
+    transcript.absorb_scalar(b"te", &proof.t_eval);
+    let nu = transcript.squeeze_challenge(b"nu");
+
+    // Step 2: Constraint equation
+    let zeta_n = zeta.pow([n as u64]);
+    let zh_zeta = zeta_n - Fr::one();
+    let n_fr = Fr::from(n as u64);
+    let l1_zeta = if (zeta - Fr::one()).is_zero() {
+        Fr::one()
+    } else {
+        zh_zeta / (n_fr * (zeta - Fr::one()))
+    };
+
+    let mut pi_zeta = Fr::zero();
+    for (i, &pi_val) in public_inputs.iter().enumerate() {
+        let omega_i = omega.pow([i as u64]);
+        if (zeta - omega_i).is_zero() {
+            pi_zeta -= pi_val;
+        } else {
+            let li = omega_i * zh_zeta / (n_fr * (zeta - omega_i));
+            pi_zeta -= pi_val * li;
+        }
+    }
+
+    let (w1, w2, w3, w4) = (proof.w_evals[0], proof.w_evals[1], proof.w_evals[2], proof.w_evals[3]);
+    let (qm, q1, q2, q3, q4, qc, qa) = (
+        proof.selector_evals[0], proof.selector_evals[1], proof.selector_evals[2],
+        proof.selector_evals[3], proof.selector_evals[4], proof.selector_evals[5],
+        proof.selector_evals[6],
+    );
+
+    let gate = qa * (qm * w1 * w2 + q1 * w1 + q2 * w2 + q3 * w3 + q4 * w4 + qc) + pi_zeta;
+
+    let k = &vk.k;
+    let perm_num = proof.z_eval
+        * (w1 + beta * k[0] * zeta + gamma)
+        * (w2 + beta * k[1] * zeta + gamma)
+        * (w3 + beta * k[2] * zeta + gamma)
+        * (w4 + beta * k[3] * zeta + gamma);
+    let perm_den = proof.z_omega_eval
+        * (w1 + beta * proof.sigma_evals[0] + gamma)
+        * (w2 + beta * proof.sigma_evals[1] + gamma)
+        * (w3 + beta * proof.sigma_evals[2] + gamma)
+        * (w4 + beta * proof.sigma_evals[3] + gamma);
+    let perm = perm_num - perm_den;
+    let boundary = l1_zeta * (proof.z_eval - Fr::one());
+
+    let lhs_eq = proof.t_eval * zh_zeta;
+    let rhs_eq = gate + alpha * perm + alpha * alpha * boundary;
+    if lhs_eq != rhs_eq {
+        return None;
+    }
+
+    // Step 3: Compute batch KZG intermediates
+    let mut f = G1Projective::zero();
+    let mut v = Fr::zero();
+    let mut nu_pow = Fr::one();
+
+    for i in 0..4 {
+        f += proof.w_comms[i].into_group() * nu_pow;
+        v += proof.w_evals[i] * nu_pow;
+        nu_pow *= nu;
+    }
+    for i in 0..4 {
+        f += vk.sigma_comms[i].into_group() * nu_pow;
+        v += proof.sigma_evals[i] * nu_pow;
+        nu_pow *= nu;
+    }
+    let selector_comms = [
+        vk.q_m_comm, vk.q_1_comm, vk.q_2_comm, vk.q_3_comm,
+        vk.q_4_comm, vk.q_c_comm, vk.q_arith_comm,
+    ];
+    for i in 0..7 {
+        f += selector_comms[i].into_group() * nu_pow;
+        v += proof.selector_evals[i] * nu_pow;
+        nu_pow *= nu;
+    }
+    f += proof.z_comm.into_group() * nu_pow;
+    v += proof.z_eval * nu_pow;
+
+    let v_g1 = G1Affine::generator() * v;
+    let batch_lhs = (f - v_g1).into_affine();
+    let batch_neg_w = (-proof.w_zeta.into_group()).into_affine();
+
+    // Step 4: z opening intermediates
+    let z_v_g1 = G1Affine::generator() * proof.z_omega_eval;
+    let z_lhs = (proof.z_comm.into_group() - z_v_g1).into_affine();
+    let z_neg_w = (-proof.w_zeta_omega.into_group()).into_affine();
+
+    Some(VerificationIntermediates {
+        batch_lhs,
+        batch_neg_w,
+        z_lhs,
+        z_neg_w,
+        zeta,
+        zeta_omega,
+    })
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
