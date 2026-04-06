@@ -8,3 +8,4 @@ pub mod srs;
 pub mod kzg;
 pub mod prover;
 pub mod verifier;
+pub mod serialization;
