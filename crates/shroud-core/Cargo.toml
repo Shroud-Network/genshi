@@ -16,6 +16,8 @@ ark-std = { workspace = true }
 ark-poly-commit = { workspace = true }
 ark-serialize = { workspace = true }
 sha2 = { workspace = true }
+tiny-keccak = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }
@@ -28,6 +30,7 @@ harness = false
 
 [features]
 default = ["std"]
+serde = ["dep:serde"]
 std = [
     "ark-std/std",
     "ark-ff/std",
