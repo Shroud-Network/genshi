@@ -1,0 +1,22 @@
+[package]
+name = "janus-cli"
+description = "Framework tooling for Janus — SRS generation, verifier emission, artifact inspection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "janus"
+path = "src/main.rs"
+
+[dependencies]
+janus-core = { workspace = true, features = ["serde"] }
+janus-evm = { workspace = true }
+clap = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+ark-bn254 = { workspace = true }
+ark-ff = { workspace = true }
+ark-serialize = { workspace = true }
