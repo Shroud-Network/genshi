@@ -1,0 +1,52 @@
+
+
+
+[workspace]
+members = [
+    "crates/janus-core",
+    "crates/janus-evm",
+    "crates/janus-solana",
+    "crates/janus-wasm",
+    "crates/janus-cli",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/shroud-network/janus"
+description = "Generalized dual-VM zero-knowledge proving framework (EVM + Solana)"
+
+[workspace.dependencies]
+# Arkworks ecosystem (v0.5.0)
+ark-bn254 = { version = "0.5", default-features = false }
+ark-grumpkin = { version = "0.5", default-features = false }
+ark-ff = { version = "0.5", default-features = false }
+ark-ec = { version = "0.5", default-features = false }
+ark-poly = { version = "0.5", default-features = false }
+ark-std = { version = "0.5", default-features = false }
+ark-poly-commit = { version = "0.5", default-features = false }
+ark-serialize = { version = "0.5", default-features = false }
+
+# Hashing
+sha2 = { version = "0.10", default-features = false }
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+
+# Internal framework crates
+janus-core = { path = "crates/janus-core" }
+janus-evm = { path = "crates/janus-evm" }
+janus-solana = { path = "crates/janus-solana" }
+janus-wasm = { path = "crates/janus-wasm" }
+
+# Serialization (optional)
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1"
+
+# Tooling
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+rand = "0.8"
+criterion = "0.5"
