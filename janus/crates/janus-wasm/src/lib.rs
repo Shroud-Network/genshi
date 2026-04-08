@@ -1,0 +1,224 @@
+//! Browser WASM helpers for the Janus framework.
+//!
+//! This crate is a **library**. It does not expose any application-specific
+//! `prove_*` entry points — applications are expected to provide a thin
+//! cdylib that wraps [`prove_circuit`] with their own witness deserialization
+//! and circuit construction.
+//!
+//! What this crate does ship:
+//!
+//! - A generic proving driver ([`prove_circuit`]) that takes any
+//!   `janus_core::Circuit` implementation plus an SRS byte slice and returns
+//!   canonical proof bytes + public input bytes.
+//! - A generic verification driver ([`verify_proof_bytes`]) that reconstructs
+//!   proof/VK from canonical bytes and runs the native (non-syscall) verifier.
+//! - A `console_error_panic_hook::set_once()` helper for WASM debug builds.
+//!
+//! # Example (application cdylib)
+//!
+//! ```ignore
+//! use wasm_bindgen::prelude::*;
+//! use janus_wasm::prove_circuit;
+//! use my_app::MyCircuit;
+//!
+//! #[wasm_bindgen]
+//! pub fn prove_my_app(witness_json: &str, srs_bytes: &[u8]) -> Result<Vec<u8>, String> {
+//!     let witness: my_app::MyWitness = serde_json::from_str(witness_json)
+//!         .map_err(|e| e.to_string())?;
+//!     prove_circuit::<MyCircuit>(&witness, srs_bytes)
+//! }
+//! ```
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+
+use janus_core::circuit::Circuit;
+use janus_core::proving::api;
+use janus_core::proving::prover::{Proof, VerificationKey};
+use janus_core::proving::serialization::{
+    proof_from_bytes, proof_to_bytes, public_inputs_to_bytes_le, vk_from_bytes, vk_to_bytes,
+};
+use janus_core::proving::srs::SRS;
+use janus_core::proving::verifier;
+
+/// Install `console_error_panic_hook` exactly once on WASM targets.
+///
+/// This is a no-op on non-WASM builds. Applications' WASM entry points should
+/// call this before their first circuit build so panics surface as readable
+/// console errors.
+pub fn install_panic_hook() {
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
+}
+
+/// Layout of the byte blob returned by [`prove_circuit`].
+///
+/// `[4 bytes proof_len LE] [proof_len bytes proof] [remaining bytes public_inputs_le]`
+///
+/// Applications should parse this blob with [`split_proof_blob`].
+pub fn compose_proof_blob(proof_bytes: &[u8], pi_bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + proof_bytes.len() + pi_bytes.len());
+    out.extend_from_slice(&(proof_bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(proof_bytes);
+    out.extend_from_slice(pi_bytes);
+    out
+}
+
+/// Split a blob produced by [`compose_proof_blob`] back into
+/// `(proof_bytes, pi_bytes)`.
+pub fn split_proof_blob(blob: &[u8]) -> Result<(&[u8], &[u8]), &'static str> {
+    if blob.len() < 4 {
+        return Err("blob too short");
+    }
+    let mut len_bytes = [0u8; 4];
+    len_bytes.copy_from_slice(&blob[..4]);
+    let proof_len = u32::from_le_bytes(len_bytes) as usize;
+    if blob.len() < 4 + proof_len {
+        return Err("blob truncated");
+    }
+    Ok((&blob[4..4 + proof_len], &blob[4 + proof_len..]))
+}
+
+/// Generic proving driver.
+///
+/// Given a concrete circuit type `C` and a native witness value, this function
+/// builds the circuit, runs the Janus prover against the supplied SRS bytes,
+/// and returns a proof blob plus the canonical verification key bytes.
+///
+/// Returns `(proof_blob, vk_bytes)`. Callers that don't need the VK can ignore
+/// the second element.
+///
+/// Internally this is a thin wrapper around [`janus_core::proving::api::prove`]
+/// that handles SRS deserialization and proof/PI byte composition for the
+/// browser side.
+pub fn prove_circuit<C: Circuit>(
+    witness: &C::Witness,
+    srs_bytes: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), &'static str> {
+    install_panic_hook();
+
+    let srs = SRS::load_from_bytes(srs_bytes);
+
+    let (proof, vk, public_inputs) = api::prove::<C>(witness, &srs);
+
+    let proof_bytes = proof_to_bytes(&proof);
+    let pi_bytes = public_inputs_to_bytes_le(public_inputs.as_ref());
+    let blob = compose_proof_blob(&proof_bytes, &pi_bytes);
+
+    let vk_bytes = vk_to_bytes(&vk);
+    Ok((blob, vk_bytes))
+}
+
+/// Extract the verification key bytes for `C` against the supplied SRS bytes.
+///
+/// Equivalent to calling [`janus_core::proving::api::extract_vk`] and then
+/// serializing the result. Useful at setup time to ship a VK to the chain
+/// (or to a Solidity verifier emitter) without first generating a proof.
+pub fn extract_vk_bytes<C: Circuit>(srs_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let srs = SRS::load_from_bytes(srs_bytes);
+    let vk = api::extract_vk::<C>(&srs);
+    Ok(vk_to_bytes(&vk))
+}
+
+/// Generic verification driver.
+///
+/// Deserializes `proof_bytes` and `vk_bytes` into their native types and runs
+/// the Janus native verifier against the supplied public inputs and SRS.
+pub fn verify_proof_bytes(
+    proof_bytes: &[u8],
+    vk_bytes: &[u8],
+    public_inputs: &[ark_bn254::Fr],
+    srs: &SRS,
+) -> Result<bool, &'static str> {
+    let proof: Proof = proof_from_bytes(proof_bytes).map_err(|_| "proof decode failed")?;
+    let vk: VerificationKey = vk_from_bytes(vk_bytes).map_err(|_| "vk decode failed")?;
+    Ok(verifier::verify(&proof, &vk, public_inputs, srs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bn254::Fr;
+    use janus_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+
+    /// Minimal Circuit impl used to exercise the generic driver in tests.
+    struct AddCircuit;
+    struct AddWitness {
+        a: Fr,
+        b: Fr,
+    }
+
+    impl Circuit for AddCircuit {
+        type Witness = AddWitness;
+        type PublicInputs = [Fr; 1];
+        const ID: &'static str = "janus-wasm.test.add";
+
+        fn num_public_inputs() -> usize {
+            1
+        }
+
+        fn synthesize(
+            builder: &mut UltraCircuitBuilder,
+            w: &Self::Witness,
+        ) -> Self::PublicInputs {
+            let a = builder.add_variable(w.a);
+            let b = builder.add_variable(w.b);
+            let c = builder.add(a, b);
+            builder.set_public(c);
+            [w.a + w.b]
+        }
+
+        fn dummy_witness() -> Self::Witness {
+            AddWitness {
+                a: Fr::from(0u64),
+                b: Fr::from(0u64),
+            }
+        }
+    }
+
+    #[test]
+    fn test_prove_and_verify_circuit_roundtrip() {
+        let srs = SRS::insecure_for_testing(128);
+        let srs_bytes = srs.save_to_bytes();
+
+        let witness = AddWitness {
+            a: Fr::from(3u64),
+            b: Fr::from(5u64),
+        };
+        let (blob, vk_bytes) = prove_circuit::<AddCircuit>(&witness, &srs_bytes).unwrap();
+
+        let (proof_bytes, pi_bytes) = split_proof_blob(&blob).unwrap();
+        let mut public_inputs = Vec::new();
+        for i in 0..pi_bytes.len() / 32 {
+            use ark_ff::PrimeField;
+            public_inputs.push(Fr::from_le_bytes_mod_order(&pi_bytes[i * 32..(i + 1) * 32]));
+        }
+
+        assert_eq!(public_inputs, vec![Fr::from(8u64)]);
+        assert!(verify_proof_bytes(proof_bytes, &vk_bytes, &public_inputs, &srs).unwrap());
+    }
+
+    #[test]
+    fn test_blob_roundtrip() {
+        let proof = vec![1u8, 2, 3, 4, 5];
+        let pi = vec![9u8, 8, 7];
+        let blob = compose_proof_blob(&proof, &pi);
+        let (p, i) = split_proof_blob(&blob).unwrap();
+        assert_eq!(p, proof.as_slice());
+        assert_eq!(i, pi.as_slice());
+    }
+
+    #[test]
+    fn test_extract_vk_bytes_matches_proved_vk() {
+        let srs = SRS::insecure_for_testing(128);
+        let srs_bytes = srs.save_to_bytes();
+
+        let extracted = extract_vk_bytes::<AddCircuit>(&srs_bytes).unwrap();
+
+        let witness = AddWitness { a: Fr::from(2u64), b: Fr::from(3u64) };
+        let (_, proved_vk_bytes) = prove_circuit::<AddCircuit>(&witness, &srs_bytes).unwrap();
+
+        assert_eq!(extracted, proved_vk_bytes);
+    }
+}
