@@ -1,11 +1,28 @@
 [package]
 name = "janus-cli"
-description = "Framework tooling for Janus — SRS generation, verifier emission, artifact inspection"
+description = "Framework tooling for Janus — SRS generation, verifier emission, circuit-aware CLI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# `janus-cli` is dual-purpose:
+#
+#   * As a **library**, downstream crates depend on it, call
+#     `janus_cli::register!(MyCircuit, "my-circuit")` next to their `Circuit`
+#     impls, and add a one-line `src/bin/janus.rs` that calls
+#     `janus_cli::run()`. Cargo auto-discovers that bin, so the consumer then
+#     runs `cargo run --bin janus -- …` and gets a CLI that knows about their
+#     circuits — no other boilerplate.
+#
+#   * As a **binary** (the `janus` executable shipped in this crate), it
+#     exposes the circuit-agnostic commands (SRS generation, Solidity library
+#     emission, inspect, verify). That binary simply delegates to `run()`
+#     with an empty registry.
+[lib]
+name = "janus_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "janus"
@@ -15,6 +32,7 @@ path = "src/main.rs"
 janus-core = { workspace = true, features = ["serde"] }
 janus-evm = { workspace = true }
 clap = { workspace = true }
+inventory = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 ark-bn254 = { workspace = true }
