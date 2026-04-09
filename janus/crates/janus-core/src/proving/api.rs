@@ -5,16 +5,38 @@
 //! [`prover::prove`] directly. Instead, they implement [`Circuit`] for their
 //! statement and call [`prove`] / [`verify`] / [`extract_vk`] from this module.
 //!
-//! ```ignore
+//! ```
+//! use ark_bn254::Fr;
 //! use janus_core::{Circuit, proving::api};
+//! use janus_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 //! use janus_core::proving::srs::SRS;
 //!
-//! let srs = SRS::insecure_for_testing(1024);
-//! let vk = api::extract_vk::<MyCircuit>(&srs);
+//! struct AddCircuit;
+//! struct AddWitness { a: Fr, b: Fr }
 //!
-//! let witness = my_witness();
-//! let (proof, _vk, public_inputs) = api::prove::<MyCircuit>(&witness, &srs);
-//! assert!(api::verify::<MyCircuit>(&proof, &vk, &public_inputs, &srs));
+//! impl Circuit for AddCircuit {
+//!     type Witness = AddWitness;
+//!     type PublicInputs = [Fr; 1];
+//!     const ID: &'static str = "doctest.add";
+//!     fn num_public_inputs() -> usize { 1 }
+//!     fn synthesize(b: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
+//!         let a = b.add_variable(w.a);
+//!         let bb = b.add_variable(w.b);
+//!         let c = b.add(a, bb);
+//!         b.set_public(c);
+//!         [w.a + w.b]
+//!     }
+//!     fn dummy_witness() -> Self::Witness {
+//!         AddWitness { a: Fr::from(0u64), b: Fr::from(0u64) }
+//!     }
+//! }
+//!
+//! let srs = SRS::insecure_for_testing(128);
+//! let vk = api::extract_vk::<AddCircuit>(&srs);
+//!
+//! let witness = AddWitness { a: Fr::from(3u64), b: Fr::from(5u64) };
+//! let (proof, _vk, public_inputs) = api::prove::<AddCircuit>(&witness, &srs);
+//! assert!(api::verify::<AddCircuit>(&proof, &vk, &public_inputs, &srs));
 //! ```
 
 use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
