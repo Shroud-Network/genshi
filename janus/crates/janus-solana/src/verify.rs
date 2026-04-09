@@ -4,8 +4,9 @@
 //! 1. `janus_core::proving::verifier::verify_prepare()` — transcript + constraint check
 //! 2. `crypto::pairing_check_2()` — BN254 pairing via `sol_alt_bn128_pairing` on Solana
 //!
-//! On native: uses arkworks pairing (for testing).
-//! On Solana BPF: would use `sol_alt_bn128_pairing` syscall.
+//! On native: uses arkworks pairing (tests, CLI, host-side verification).
+//! On Solana BPF (`target_os = "solana"`): routes through the
+//! `sol_alt_bn128_pairing` syscall via the `solana-program` crate.
 
 use ark_bn254::Fr;
 
