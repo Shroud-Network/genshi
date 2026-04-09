@@ -14,6 +14,18 @@ ark-ff = { workspace = true }
 ark-ec = { workspace = true }
 ark-serialize = { workspace = true }
 
+# Pulled in only when building for the actual Solana BPF target.
+# On BPF we route pairing checks through `sol_alt_bn128_pairing` instead of
+# the arkworks pairing engine (which blows the CU budget).
+[target.'cfg(target_os = "solana")'.dependencies]
+solana-program = ">=1.18, <3"
+
 [features]
 default = ["std"]
 std = ["janus-core/std"]
+
+# `target_os = "solana"` is only defined when rustc is driven by the Solana
+# BPF backend. Tell host rustc that the cfg is recognized so the
+# `unexpected_cfgs` lint stays quiet on normal cargo builds.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
