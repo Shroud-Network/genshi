@@ -6,7 +6,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use janus_core::{Circuit, arithmetization::ultra_circuit_builder::UltraCircuitBuilder};
 //! use ark_bn254::Fr;
 //!
