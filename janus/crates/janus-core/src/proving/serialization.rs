@@ -1,15 +1,23 @@
 //! Canonical proof and verification key serialization.
 //!
 //! Provides deterministic byte encoding for cross-VM compatibility (G7).
-//! Uses uncompressed point encoding (64 bytes per G1Affine) so that
-//! EVM precompiles and Solana syscalls can consume points directly
-//! without decompression.
+//! Uses **uncompressed big-endian encoding** for both G1 points and Fr
+//! elements so that EVM precompiles (EIP-197: `x_be || y_be`), Solana
+//! `sol_alt_bn128_*` syscalls, and the Fiat-Shamir transcript can all
+//! consume the same bytes without any decompression or byte swapping.
 //!
-//! Field elements are encoded as 32 bytes in little-endian (arkworks canonical).
-//! Public input adapters provide big-endian (EVM) and little-endian (Solana).
+//! - `G1Affine` → 64 bytes: `x_be || y_be` (each 32-byte big-endian Fq).
+//!   The identity element is encoded as 64 zero bytes.
+//! - `Fr` → 32 bytes big-endian.
+//!
+//! Public input adapters ([`public_inputs_to_bytes_be`] /
+//! [`public_inputs_to_bytes_le`]) provide the two ordering conventions
+//! that the two VMs' instruction encoders expect at the application
+//! boundary.
 
-use ark_bn254::{Fr, G1Affine};
-use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
+use ark_bn254::{Fq, Fr, G1Affine};
+use ark_ec::AffineRepr;
+use ark_ff::{BigInteger, PrimeField, Zero as _};
 use alloc::vec::Vec;
 
 use super::prover::{Proof, VerificationKey};
@@ -37,26 +45,56 @@ const FR_SIZE: usize = 32;
 
 fn serialize_g1(point: &G1Affine) -> Vec<u8> {
     let mut buf = Vec::with_capacity(G1_UNCOMPRESSED_SIZE);
-    point.serialize_uncompressed(&mut buf)
-        .expect("G1 serialization should not fail");
+    if point.is_zero() {
+        buf.resize(G1_UNCOMPRESSED_SIZE, 0);
+        return buf;
+    }
+    let x: Fq = point.x().unwrap();
+    let y: Fq = point.y().unwrap();
+    buf.extend_from_slice(&x.into_bigint().to_bytes_be());
+    buf.extend_from_slice(&y.into_bigint().to_bytes_be());
     buf
 }
 
 fn deserialize_g1(bytes: &[u8]) -> Result<G1Affine, SerError> {
-    G1Affine::deserialize_uncompressed(bytes)
-        .map_err(|_| SerError::DeserializeFailed)
+    if bytes.len() < G1_UNCOMPRESSED_SIZE {
+        return Err(SerError::InvalidLength {
+            expected: G1_UNCOMPRESSED_SIZE,
+            got: bytes.len(),
+        });
+    }
+    // All-zero encoding represents the identity element.
+    if bytes[..G1_UNCOMPRESSED_SIZE].iter().all(|&b| b == 0) {
+        return Ok(G1Affine::zero());
+    }
+    let x = Fq::from_be_bytes_mod_order(&bytes[..32]);
+    let y = Fq::from_be_bytes_mod_order(&bytes[32..64]);
+    let point = G1Affine::new_unchecked(x, y);
+    if !point.is_on_curve() || !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(SerError::DeserializeFailed);
+    }
+    Ok(point)
 }
 
 fn serialize_fr(scalar: &Fr) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(FR_SIZE);
-    scalar.serialize_compressed(&mut buf)
-        .expect("Fr serialization should not fail");
-    buf
+    scalar.into_bigint().to_bytes_be()
 }
 
 fn deserialize_fr(bytes: &[u8]) -> Result<Fr, SerError> {
-    Fr::deserialize_compressed(bytes)
-        .map_err(|_| SerError::DeserializeFailed)
+    if bytes.len() < FR_SIZE {
+        return Err(SerError::InvalidLength {
+            expected: FR_SIZE,
+            got: bytes.len(),
+        });
+    }
+    // Strict canonical check: the 32-byte big-endian integer must be
+    // strictly less than the Fr modulus. Anything else is rejected so
+    // that round-tripping is truly deterministic (no silent reduction).
+    let reduced = Fr::from_be_bytes_mod_order(&bytes[..FR_SIZE]);
+    if reduced.into_bigint().to_bytes_be() != bytes[..FR_SIZE] {
+        return Err(SerError::DeserializeFailed);
+    }
+    Ok(reduced)
 }
 
 // ============================================================================
@@ -321,30 +359,30 @@ pub fn vk_from_bytes(bytes: &[u8]) -> Result<VerificationKey, SerError> {
 // Public input encoding
 // ============================================================================
 
-/// Encode public inputs as big-endian bytes for EVM Solidity verifier.
+/// Encode public inputs as big-endian bytes for the EVM Solidity verifier.
 ///
 /// Each Fr element is encoded as 32 bytes, most significant byte first.
-/// This matches Solidity's `uint256` ABI encoding.
+/// This matches Solidity's `uint256` ABI encoding and the internal
+/// `serialize_fr` layout, so a Solidity verifier can read public inputs
+/// directly from `calldata` as `uint256[]` without any conversion.
 pub fn public_inputs_to_bytes_be(inputs: &[Fr]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(inputs.len() * FR_SIZE);
     for input in inputs {
-        let le_bytes = serialize_fr(input);
-        // Reverse to big-endian
-        let mut be_bytes = le_bytes;
-        be_bytes.reverse();
+        let be_bytes = input.into_bigint().to_bytes_be();
         buf.extend_from_slice(&be_bytes);
     }
     buf
 }
 
-/// Encode public inputs as little-endian bytes for Solana.
+/// Encode public inputs as little-endian bytes.
 ///
 /// Each Fr element is encoded as 32 bytes, least significant byte first.
-/// This matches arkworks canonical encoding and Solana's convention.
+/// This is the convention used by the janus-solana instruction-data
+/// encoder and `Fr::from_le_bytes_mod_order`.
 pub fn public_inputs_to_bytes_le(inputs: &[Fr]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(inputs.len() * FR_SIZE);
     for input in inputs {
-        buf.extend_from_slice(&serialize_fr(input));
+        buf.extend_from_slice(&input.into_bigint().to_bytes_le());
     }
     buf
 }
