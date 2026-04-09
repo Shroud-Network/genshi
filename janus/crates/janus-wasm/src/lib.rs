@@ -1,32 +1,70 @@
 //! Browser WASM helpers for the Janus framework.
 //!
-//! This crate is a **library**. It does not expose any application-specific
-//! `prove_*` entry points — applications are expected to provide a thin
-//! cdylib that wraps [`prove_circuit`] with their own witness deserialization
-//! and circuit construction.
+//! # What this crate ships
 //!
-//! What this crate does ship:
+//! **Generic Rust helpers** (for applications that wrap their own circuits
+//! in a cdylib):
 //!
-//! - A generic proving driver ([`prove_circuit`]) that takes any
-//!   `janus_core::Circuit` implementation plus an SRS byte slice and returns
-//!   canonical proof bytes + public input bytes.
-//! - A generic verification driver ([`verify_proof_bytes`]) that reconstructs
-//!   proof/VK from canonical bytes and runs the native (non-syscall) verifier.
-//! - A `console_error_panic_hook::set_once()` helper for WASM debug builds.
+//! - [`prove_circuit`] — build a circuit from any `janus_core::Circuit`
+//!   impl, run the prover, return canonical proof bytes + VK bytes.
+//! - [`extract_vk_bytes`] — derive the VK for a circuit without proving.
+//! - [`verify_proof_bytes`] — run the native verifier against canonical bytes.
+//! - [`compose_proof_blob`] / [`split_proof_blob`] — canonical `(proof, PI)`
+//!   envelope used over the JS ↔ WASM boundary.
+//! - [`install_panic_hook`] — install `console_error_panic_hook` on wasm32.
 //!
-//! # Example (application cdylib)
+//! **Direct `#[wasm_bindgen]` exports** (available to JavaScript without
+//! shipping an application-specific cdylib; see the [`wasm`] module):
 //!
-//! ```ignore
-//! use wasm_bindgen::prelude::*;
-//! use janus_wasm::prove_circuit;
-//! use my_app::MyCircuit;
+//! - `init()` — install the panic hook.
+//! - `verifyProof(proof, vk, pi, srs)` — verify any Janus proof given its
+//!   canonical byte encoding, without knowing the circuit type.
+//! - `composeProofBlob(proof, pi)` / `proofFromBlob(blob)` /
+//!   `piFromBlob(blob)` — envelope helpers, useful when a JS wrapper needs
+//!   to ferry proof bundles between prover and verifier sides.
 //!
-//! #[wasm_bindgen]
-//! pub fn prove_my_app(witness_json: &str, srs_bytes: &[u8]) -> Result<Vec<u8>, String> {
-//!     let witness: my_app::MyWitness = serde_json::from_str(witness_json)
-//!         .map_err(|e| e.to_string())?;
-//!     prove_circuit::<MyCircuit>(&witness, srs_bytes)
+//! Proving itself is inherently circuit-specific, so applications that
+//! want a `prove_my_circuit()` export still need to ship their own cdylib
+//! that wraps [`prove_circuit`] with their concrete witness type.
+//!
+//! # Example (generic driver)
+//!
+//! Application cdylibs wrap [`prove_circuit`] in a `#[wasm_bindgen]` export
+//! that knows their concrete witness type. The driver itself is plain Rust:
+//!
+//! ```
+//! use ark_bn254::Fr;
+//! use janus_core::Circuit;
+//! use janus_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+//! use janus_core::proving::srs::SRS;
+//! use janus_wasm::{prove_circuit, split_proof_blob};
+//!
+//! struct AddCircuit;
+//! struct AddWitness { a: Fr, b: Fr }
+//!
+//! impl Circuit for AddCircuit {
+//!     type Witness = AddWitness;
+//!     type PublicInputs = [Fr; 1];
+//!     const ID: &'static str = "doctest.wasm.add";
+//!     fn num_public_inputs() -> usize { 1 }
+//!     fn synthesize(b: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
+//!         let a = b.add_variable(w.a);
+//!         let bb = b.add_variable(w.b);
+//!         let c = b.add(a, bb);
+//!         b.set_public(c);
+//!         [w.a + w.b]
+//!     }
+//!     fn dummy_witness() -> Self::Witness {
+//!         AddWitness { a: Fr::from(0u64), b: Fr::from(0u64) }
+//!     }
 //! }
+//!
+//! let srs_bytes = SRS::insecure_for_testing(128).save_to_bytes();
+//! let witness = AddWitness { a: Fr::from(3u64), b: Fr::from(5u64) };
+//! let (blob, _vk_bytes) = prove_circuit::<AddCircuit>(&witness, &srs_bytes).unwrap();
+//!
+//! // The blob is `[u32 proof_len LE] [proof bytes] [PI bytes]`.
+//! let (_proof, _pi) = split_proof_blob(&blob).unwrap();
 //! ```
 
 extern crate alloc;
@@ -134,6 +172,90 @@ pub fn verify_proof_bytes(
     let proof: Proof = proof_from_bytes(proof_bytes).map_err(|_| "proof decode failed")?;
     let vk: VerificationKey = vk_from_bytes(vk_bytes).map_err(|_| "vk decode failed")?;
     Ok(verifier::verify(&proof, &vk, public_inputs, srs))
+}
+
+// ============================================================================
+// JavaScript-facing wasm-bindgen surface
+// ============================================================================
+//
+// These exports only compile when targeting `wasm32` because `wasm-bindgen`
+// and friends are wasm-only dependencies. On host builds (including the
+// in-tree cargo test suite), the `wasm` module simply doesn't exist.
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm {
+    //! Direct JavaScript entry points for the circuit-agnostic pieces of
+    //! Janus: panic hook installation, byte-level proof verification, and
+    //! envelope helpers for the `(proof, public_inputs)` blob format.
+
+    use alloc::vec::Vec;
+    use ark_bn254::Fr;
+    use ark_ff::PrimeField;
+    use wasm_bindgen::prelude::*;
+
+    use janus_core::proving::srs::SRS;
+
+    use super::{compose_proof_blob, split_proof_blob, verify_proof_bytes};
+
+    /// Install the `console_error_panic_hook`, so Rust panics surface as
+    /// readable browser console errors instead of opaque `unreachable`
+    /// traps. Safe to call multiple times.
+    #[wasm_bindgen]
+    pub fn init() {
+        super::install_panic_hook();
+    }
+
+    /// Verify a Janus proof given canonical byte encodings.
+    ///
+    /// - `proof_bytes`: output of `janus_core::proving::serialization::proof_to_bytes`.
+    /// - `vk_bytes`: output of `vk_to_bytes` for the same circuit.
+    /// - `pi_bytes`: concatenated 32-byte little-endian Fr public inputs
+    ///   (`public_inputs_to_bytes_le`). This is the canonical Solana
+    ///   encoding and is byte-equivalent to what the host CLI emits.
+    /// - `srs_bytes`: SRS in `SRS::save_to_bytes` format.
+    ///
+    /// Returns `true` on a valid proof, `false` on a cryptographically
+    /// failing proof, or a `JsError` on decode / length failures.
+    #[wasm_bindgen(js_name = verifyProof)]
+    pub fn verify_proof(
+        proof_bytes: &[u8],
+        vk_bytes: &[u8],
+        pi_bytes: &[u8],
+        srs_bytes: &[u8],
+    ) -> Result<bool, JsError> {
+        if pi_bytes.len() % 32 != 0 {
+            return Err(JsError::new(
+                "public input bytes must be a multiple of 32 (32-byte LE Fr elements)",
+            ));
+        }
+        let mut pis = Vec::with_capacity(pi_bytes.len() / 32);
+        for chunk in pi_bytes.chunks_exact(32) {
+            pis.push(Fr::from_le_bytes_mod_order(chunk));
+        }
+        let srs = SRS::load_from_bytes(srs_bytes);
+        verify_proof_bytes(proof_bytes, vk_bytes, &pis, &srs).map_err(JsError::new)
+    }
+
+    /// Pack a `(proof, public_inputs)` pair into the length-prefixed blob
+    /// format documented on [`super::compose_proof_blob`].
+    #[wasm_bindgen(js_name = composeProofBlob)]
+    pub fn compose_proof_blob_js(proof_bytes: &[u8], pi_bytes: &[u8]) -> Vec<u8> {
+        compose_proof_blob(proof_bytes, pi_bytes)
+    }
+
+    /// Extract the proof slice from a blob produced by `composeProofBlob`.
+    #[wasm_bindgen(js_name = proofFromBlob)]
+    pub fn proof_from_blob(blob: &[u8]) -> Result<Vec<u8>, JsError> {
+        let (p, _) = split_proof_blob(blob).map_err(JsError::new)?;
+        Ok(p.to_vec())
+    }
+
+    /// Extract the public-input slice from a blob produced by `composeProofBlob`.
+    #[wasm_bindgen(js_name = piFromBlob)]
+    pub fn pi_from_blob(blob: &[u8]) -> Result<Vec<u8>, JsError> {
+        let (_, pi) = split_proof_blob(blob).map_err(JsError::new)?;
+        Ok(pi.to_vec())
+    }
 }
 
 #[cfg(test)]
