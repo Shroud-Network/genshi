@@ -19,10 +19,25 @@
 //! ```
 //!
 //! Each squeeze resets the hasher state to prevent state reuse attacks.
+//!
+//! # Byte encoding (Invariant J2)
+//!
+//! The transcript uses **EVM-native big-endian uncompressed encoding** so
+//! that a Solidity verifier can absorb the exact same bytes directly from
+//! `calldata` without decompression or byte swapping:
+//!
+//! - `G1Affine` → 64 bytes: `x_be || y_be` (each 32-byte big-endian Fq).
+//!   The identity element is encoded as 64 zero bytes.
+//! - `Fr` → 32 bytes big-endian.
+//! - `label` and `data` are prefixed with a little-endian `u32` length.
+//!
+//! This matches the wire format of the BN254 EVM precompiles (EIP-197) and
+//! Solana's `sol_alt_bn128_*` syscalls, so the same bytes that land in
+//! `calldata` / instruction data can be piped straight into Keccak.
 
 use ark_bn254::{Fr, G1Affine};
-use ark_ff::PrimeField;
-use ark_serialize::CanonicalSerialize;
+use ark_ec::AffineRepr;
+use ark_ff::{BigInteger, PrimeField};
 use tiny_keccak::{Hasher, Keccak};
 use alloc::vec::Vec;
 
@@ -58,10 +73,12 @@ impl Transcript {
         self.state.extend_from_slice(data);
     }
 
-    /// Absorb a scalar field element (BN254 Fr).
+    /// Absorb a scalar field element (BN254 Fr) as 32 bytes big-endian.
+    ///
+    /// Matches the on-chain `uint256` word layout so a Solidity verifier
+    /// can absorb `abi.encodePacked(scalar)` directly.
     pub fn absorb_scalar(&mut self, label: &[u8], scalar: &Fr) {
-        let mut bytes = Vec::new();
-        scalar.serialize_compressed(&mut bytes).expect("Fr serialization should not fail");
+        let bytes = scalar.into_bigint().to_bytes_be();
         self.absorb_bytes(label, &bytes);
     }
 
@@ -75,10 +92,21 @@ impl Transcript {
         }
     }
 
-    /// Absorb a G1 affine point (commitment).
+    /// Absorb a G1 affine point (commitment) as 64 bytes uncompressed BE.
+    ///
+    /// Format: `x_be (32 bytes) || y_be (32 bytes)`. The identity element
+    /// is absorbed as 64 zero bytes. This is the exact layout consumed by
+    /// the `ecAdd` / `ecMul` / `ecPairing` EVM precompiles, so a Solidity
+    /// verifier can forward the same bytes straight from `calldata` into
+    /// Keccak without any transformation.
     pub fn absorb_point(&mut self, label: &[u8], point: &G1Affine) {
-        let mut bytes = Vec::new();
-        point.serialize_compressed(&mut bytes).expect("G1 serialization should not fail");
+        let mut bytes = [0u8; 64];
+        if !point.is_zero() {
+            let x: ark_bn254::Fq = point.x().unwrap();
+            let y: ark_bn254::Fq = point.y().unwrap();
+            bytes[..32].copy_from_slice(&x.into_bigint().to_bytes_be());
+            bytes[32..].copy_from_slice(&y.into_bigint().to_bytes_be());
+        }
         self.absorb_bytes(label, &bytes);
     }
 
