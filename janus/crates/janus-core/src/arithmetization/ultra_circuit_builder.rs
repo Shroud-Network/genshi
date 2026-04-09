@@ -15,11 +15,14 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```
+//! use ark_bn254::Fr;
+//! use janus_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+//!
 //! let mut builder = UltraCircuitBuilder::new();
-//! let a = builder.add_variable(Fr::from(3));
-//! let b = builder.add_variable(Fr::from(4));
-//! let c = builder.add_variable(Fr::from(7));
+//! let a = builder.add_variable(Fr::from(3u64));
+//! let b = builder.add_variable(Fr::from(4u64));
+//! let c = builder.add_variable(Fr::from(7u64));
 //! builder.create_add_gate(a, b, c); // constrain: a + b - c = 0
 //! assert!(builder.check_circuit_correctness());
 //! ```
