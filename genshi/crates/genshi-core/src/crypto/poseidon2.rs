@@ -392,8 +392,43 @@ pub fn poseidon2_hash_5(a: Fr, b: Fr, c: Fr, d: Fr, e: Fr) -> Fr {
     // Second absorption: absorb the 5th element
     state[0] += e;
     poseidon2_permutation_t5(&mut state);
-    
+
     // Squeeze: output first element
+    state[0]
+}
+
+/// Hash an arbitrary number of field elements to 1 (variable-arity sponge).
+///
+/// Uses the t=5 permutation (rate=4, capacity=1) with standard sponge
+/// construction: absorb inputs in chunks of 4, permute after each chunk,
+/// squeeze the first element.
+///
+/// For 1-4 inputs this is equivalent to a single permutation.
+/// For 5+ inputs it chains multiple absorb rounds.
+///
+/// # Panics
+/// Panics if `inputs` is empty.
+pub fn poseidon2_hash(inputs: &[Fr]) -> Fr {
+    assert!(!inputs.is_empty(), "poseidon2_hash requires at least 1 input");
+
+    let rate = 4; // t=5, capacity=1
+    let mut state = [Fr::zero(); 5];
+
+    for (chunk_idx, chunk) in inputs.chunks(rate).enumerate() {
+        if chunk_idx == 0 {
+            // First chunk: place directly into state
+            for (i, &val) in chunk.iter().enumerate() {
+                state[i] = val;
+            }
+        } else {
+            // Subsequent chunks: add into rate positions
+            for (i, &val) in chunk.iter().enumerate() {
+                state[i] += val;
+            }
+        }
+        poseidon2_permutation_t5(&mut state);
+    }
+
     state[0]
 }
 
