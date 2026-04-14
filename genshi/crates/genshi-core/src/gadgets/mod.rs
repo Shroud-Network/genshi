@@ -5,10 +5,14 @@
 //! primitives — applications compose them to build concrete statements.
 //!
 //! Available gadgets:
-//! - [`poseidon2_gadget`] — in-circuit Poseidon2 permutation and hashes (arities 2–5)
+//! - [`poseidon2_gadget`] — in-circuit Poseidon2 permutation and hashes (arities 2–5 + variable)
 //! - [`merkle`] — generic 4-ary Poseidon2 Merkle inclusion proofs
 //! - [`range_proof`] — plookup-backed range checks (8/16/32/64-bit)
+//! - [`nullifier`] — deterministic nullifier derivation (anti-double-spend)
+//! - [`commitment`] — generic note commitment (variable-field Poseidon2 + optional Pedersen)
 
 pub mod poseidon2_gadget;
 pub mod merkle;
 pub mod range_proof;
+pub mod nullifier;
+pub mod commitment;
