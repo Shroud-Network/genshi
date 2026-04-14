@@ -388,6 +388,44 @@ pub fn poseidon2_hash_5_gadget(
     state[0]
 }
 
+/// In-circuit Poseidon2 hash of N elements → 1 (variable-arity sponge).
+///
+/// Uses the t=5 permutation (rate=4, capacity=1) with standard sponge
+/// construction: absorb inputs in chunks of 4, permute after each chunk,
+/// squeeze the first element.
+///
+/// This is the in-circuit equivalent of [`crate::crypto::poseidon2::poseidon2_hash`].
+///
+/// # Panics
+/// Panics if `inputs` is empty.
+pub fn poseidon2_hash_gadget(
+    builder: &mut UltraCircuitBuilder,
+    inputs: &[WireRef],
+) -> WireRef {
+    assert!(!inputs.is_empty(), "poseidon2_hash_gadget requires at least 1 input");
+
+    let rate = 4; // t=5, capacity=1
+    let zero = builder.zero_var();
+    let mut state = [zero; 5];
+
+    for (chunk_idx, chunk) in inputs.chunks(rate).enumerate() {
+        if chunk_idx == 0 {
+            // First chunk: place directly into state
+            for (i, &val) in chunk.iter().enumerate() {
+                state[i] = val;
+            }
+        } else {
+            // Subsequent chunks: add into rate positions
+            for (i, &val) in chunk.iter().enumerate() {
+                state[i] = builder.add(state[i], val);
+            }
+        }
+        poseidon2_permutation_t5_gadget(builder, &mut state);
+    }
+
+    state[0]
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
