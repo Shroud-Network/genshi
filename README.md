@@ -5,7 +5,7 @@
 Version 0.2 — April 2026
 Authors: Siddharth Manjul, Amit Sagar
 
-> **genshi** (n.) — the two-faced Roman god of gates, beginnings, and transitions. In this framework, genshi produces a **single proof that verifies bytewise-identically on two different virtual machines**: EVM and Solana.
+> **genshi** (原始, jp.) — *origin; primordial; elemental.* The name reflects what the framework reduces dual-VM zero-knowledge proving to: a single elemental primitive. One proof, one format, two virtual machines — EVM and Solana — verified bytewise-identically.
 
 ---
 
