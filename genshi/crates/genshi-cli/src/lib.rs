@@ -42,6 +42,8 @@
 //! types of any circuit. The macro closes over the generic type at the
 //! registration site and type-erases it for the CLI.
 
+pub mod ceremony;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -67,9 +69,12 @@ pub mod __private {
     //! the public API — the names and signatures here may change without a
     //! major-version bump.
     pub use genshi_core::proving::api;
-    pub use genshi_core::proving::serialization::vk_to_bytes;
+    pub use genshi_core::proving::serialization::{
+        proof_to_bytes, public_inputs_to_bytes_le, vk_to_bytes,
+    };
     pub use genshi_core::proving::srs::SRS;
     pub use genshi_evm::solidity_emitter::{EmitterOptions, generate_verifier_sol_with};
+    pub use serde_json;
 }
 
 // ============================================================================
@@ -103,6 +108,15 @@ pub struct CircuitEntry {
     /// rendered contract source.
     pub emit_solidity:
         fn(&SRS, &genshi_evm::solidity_emitter::EmitterOptions) -> String,
+    /// Deserialize a witness from JSON, prove the circuit, and return
+    /// `(proof_bytes, vk_bytes, public_inputs_le_bytes)`.
+    pub prove_from_json:
+        fn(&str, &SRS) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String>,
+    /// Return a valid witness as pretty-printed JSON.
+    ///
+    /// Used by `gen-witness` so developers get a concrete, provable witness
+    /// they can run immediately and then edit with their own data.
+    pub witness_json: fn() -> Result<String, String>,
 }
 
 inventory::collect!(CircuitEntry);
@@ -115,9 +129,12 @@ inventory::collect!(CircuitEntry);
 /// use genshi_cli::Circuit;
 /// use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 /// use ark_bn254::Fr;
+/// use serde::{Serialize, Deserialize};
 ///
 /// pub struct MyCircuit;
-/// pub struct MyWitness { pub x: Fr }
+///
+/// #[derive(Serialize, Deserialize)]
+/// pub struct MyWitness { pub x: u64 }
 ///
 /// impl Circuit for MyCircuit {
 ///     type Witness = MyWitness;
@@ -125,12 +142,12 @@ inventory::collect!(CircuitEntry);
 ///     const ID: &'static str = "example.my-circuit";
 ///     fn num_public_inputs() -> usize { 1 }
 ///     fn synthesize(builder: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
-///         let v = builder.add_variable(w.x);
+///         let v = builder.add_variable(Fr::from(w.x));
 ///         builder.set_public(v);
-///         [w.x]
+///         [Fr::from(w.x)]
 ///     }
 ///     fn dummy_witness() -> Self::Witness {
-///         MyWitness { x: Fr::from(0u64) }
+///         MyWitness { x: 0 }
 ///     }
 /// }
 ///
@@ -145,6 +162,8 @@ inventory::collect!(CircuitEntry);
 /// given `Circuit` implementation.
 #[macro_export]
 macro_rules! register {
+    // Form 1: Witness type is directly JSON-serializable (Serialize + Deserialize).
+    //   genshi_cli::register!(MyCircuit, "name");
     ($ty:ty, $name:literal) => {
         $crate::inventory::submit! {
             $crate::CircuitEntry {
@@ -161,6 +180,109 @@ macro_rules! register {
                                 opts: &$crate::__private::EmitterOptions| {
                     let vk = $crate::__private::api::extract_vk::<$ty>(srs);
                     $crate::__private::generate_verifier_sol_with(&vk, srs, opts)
+                },
+                prove_from_json: |json: &str, srs: &$crate::__private::SRS| {
+                    let witness: <$ty as $crate::Circuit>::Witness =
+                        $crate::__private::serde_json::from_str(json)
+                            .map_err(|e| format!("witness deserialization failed: {e}"))?;
+                    let (proof, vk, pi) = $crate::__private::api::prove::<$ty>(&witness, srs);
+                    let proof_bytes = $crate::__private::proof_to_bytes(&proof);
+                    let vk_bytes = $crate::__private::vk_to_bytes(&vk);
+                    let pi_bytes = $crate::__private::public_inputs_to_bytes_le(pi.as_ref());
+                    Ok((proof_bytes, vk_bytes, pi_bytes))
+                },
+                witness_json: || {
+                    let w = <$ty as $crate::Circuit>::dummy_witness();
+                    $crate::__private::serde_json::to_string_pretty(&w)
+                        .map_err(|e| format!("witness serialization failed: {e}"))
+                },
+            }
+        }
+    };
+
+    // Form 2 (4-arg): Witness needs JSON proxy types + both conversion directions.
+    //   genshi_cli::register!(MyCircuit, "name",
+    //       |json: &str| { ... -> Result<Witness, String> },
+    //       |w: &Witness| { ... -> String }
+    //   );
+    ($ty:ty, $name:literal, $witness_from_json:expr, $witness_to_json:expr) => {
+        $crate::inventory::submit! {
+            $crate::CircuitEntry {
+                name: $name,
+                id: <$ty as $crate::Circuit>::ID,
+                num_public_inputs: || {
+                    <$ty as $crate::Circuit>::num_public_inputs()
+                },
+                extract_vk_bytes: |srs: &$crate::__private::SRS| {
+                    let vk = $crate::__private::api::extract_vk::<$ty>(srs);
+                    $crate::__private::vk_to_bytes(&vk)
+                },
+                emit_solidity: |srs: &$crate::__private::SRS,
+                                opts: &$crate::__private::EmitterOptions| {
+                    let vk = $crate::__private::api::extract_vk::<$ty>(srs);
+                    $crate::__private::generate_verifier_sol_with(&vk, srs, opts)
+                },
+                prove_from_json: |json: &str, srs: &$crate::__private::SRS| {
+                    let convert: fn(&str) -> Result<
+                        <$ty as $crate::Circuit>::Witness,
+                        String,
+                    > = $witness_from_json;
+                    let witness = convert(json)?;
+                    let (proof, vk, pi) = $crate::__private::api::prove::<$ty>(&witness, srs);
+                    let proof_bytes = $crate::__private::proof_to_bytes(&proof);
+                    let vk_bytes = $crate::__private::vk_to_bytes(&vk);
+                    let pi_bytes = $crate::__private::public_inputs_to_bytes_le(pi.as_ref());
+                    Ok((proof_bytes, vk_bytes, pi_bytes))
+                },
+                witness_json: || {
+                    let w = <$ty as $crate::Circuit>::dummy_witness();
+                    let convert: fn(
+                        &<$ty as $crate::Circuit>::Witness,
+                    ) -> String = $witness_to_json;
+                    Ok(convert(&w))
+                },
+            }
+        }
+    };
+
+    // Form 2 (3-arg, legacy): from_json only, no reverse direction.
+    //   genshi_cli::register!(MyCircuit, "name", |json: &str| { ... });
+    ($ty:ty, $name:literal, $witness_from_json:expr) => {
+        $crate::inventory::submit! {
+            $crate::CircuitEntry {
+                name: $name,
+                id: <$ty as $crate::Circuit>::ID,
+                num_public_inputs: || {
+                    <$ty as $crate::Circuit>::num_public_inputs()
+                },
+                extract_vk_bytes: |srs: &$crate::__private::SRS| {
+                    let vk = $crate::__private::api::extract_vk::<$ty>(srs);
+                    $crate::__private::vk_to_bytes(&vk)
+                },
+                emit_solidity: |srs: &$crate::__private::SRS,
+                                opts: &$crate::__private::EmitterOptions| {
+                    let vk = $crate::__private::api::extract_vk::<$ty>(srs);
+                    $crate::__private::generate_verifier_sol_with(&vk, srs, opts)
+                },
+                prove_from_json: |json: &str, srs: &$crate::__private::SRS| {
+                    let convert: fn(&str) -> Result<
+                        <$ty as $crate::Circuit>::Witness,
+                        String,
+                    > = $witness_from_json;
+                    let witness = convert(json)?;
+                    let (proof, vk, pi) = $crate::__private::api::prove::<$ty>(&witness, srs);
+                    let proof_bytes = $crate::__private::proof_to_bytes(&proof);
+                    let vk_bytes = $crate::__private::vk_to_bytes(&vk);
+                    let pi_bytes = $crate::__private::public_inputs_to_bytes_le(pi.as_ref());
+                    Ok((proof_bytes, vk_bytes, pi_bytes))
+                },
+                witness_json: || {
+                    Err(format!(
+                        "circuit `{}` does not provide a witness-to-JSON converter. \
+                         Update the register! call to the 4-argument form: \
+                         register!(Ty, \"name\", from_json, to_json)",
+                        $name
+                    ))
                 },
             }
         }
@@ -333,6 +455,49 @@ enum Commands {
         output: PathBuf,
     },
 
+    /// Generate a witness JSON file for a registered circuit.
+    ///
+    /// Outputs a valid, provable witness built from the circuit's default
+    /// values. You can pass it directly to `prove` to confirm the pipeline
+    /// works, then edit the JSON with your own data.
+    ///
+    /// ```text
+    /// genshi gen-witness --circuit transfer --output witness.json
+    /// genshi prove --circuit transfer --witness witness.json --srs srs.bin --output out/
+    /// ```
+    GenWitness {
+        /// Short CLI name of the registered circuit (e.g. "transfer").
+        #[arg(long)]
+        circuit: String,
+        /// Output file path. Defaults to stdout if omitted.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+
+    /// Generate a proof from a witness JSON file.
+    ///
+    /// Reads the witness from `--witness`, deserializes it into the circuit's
+    /// native `Witness` type (via serde), runs the prover, and writes:
+    /// - `<output>/proof.bin` — canonical proof bytes
+    /// - `<output>/public_inputs.bin` — public inputs as 32-byte LE Fr elements
+    /// - `<output>/vk.bin` — verification key
+    ///
+    /// The witness JSON schema is defined by the circuit's `Witness` type.
+    Prove {
+        /// Short CLI name of the registered circuit (e.g. "transfer").
+        #[arg(long)]
+        circuit: String,
+        /// Path to the witness JSON file.
+        #[arg(long)]
+        witness: PathBuf,
+        /// Path to a serialized SRS.
+        #[arg(long)]
+        srs: PathBuf,
+        /// Output directory for proof artifacts.
+        #[arg(long)]
+        output: PathBuf,
+    },
+
     /// Verify a proof natively given (proof, vk, public-inputs, srs) files.
     ///
     /// Public inputs are expected as concatenated 32-byte little-endian Fr
@@ -364,6 +529,61 @@ enum SrsCmd {
         #[arg(long)]
         output: PathBuf,
     },
+
+    /// Import an SRS from a Powers of Tau `.ptau` ceremony file.
+    ///
+    /// Reads the BN254 G1/G2 points from a `.ptau` file (snarkjs / Hermez
+    /// format) and converts them to genshi's internal SRS format. The
+    /// `--max-degree` flag trims the imported SRS to the specified degree.
+    ///
+    /// Use this for production deployments where you want a ceremony-backed
+    /// SRS instead of the insecure `srs new` shortcut.
+    Import {
+        /// Path to the `.ptau` ceremony file.
+        #[arg(long)]
+        input: PathBuf,
+        /// Maximum polynomial degree to retain from the ceremony.
+        #[arg(long)]
+        max_degree: usize,
+        /// Output file path for the serialized SRS.
+        #[arg(long)]
+        output: PathBuf,
+    },
+
+    /// Run a Powers-of-Tau ceremony and write the resulting SRS to disk.
+    ///
+    /// Generates a production-grade SRS using a multi-party ceremony with
+    /// OS entropy. Security model: 1-of-N trust — as long as ANY participant
+    /// destroys their secret, the toxic waste is unrecoverable.
+    ///
+    /// ```text
+    /// genshi srs ceremony --max-degree 65536 --participants 3 --output srs.bin
+    /// ```
+    Ceremony {
+        /// Maximum polynomial degree the SRS should support.
+        #[arg(long)]
+        max_degree: usize,
+        /// Number of ceremony participants (each contributes OS entropy).
+        #[arg(long, default_value_t = 3)]
+        participants: usize,
+        /// Output file path for the serialized SRS.
+        #[arg(long)]
+        output: PathBuf,
+    },
+
+    /// Verify the pairing consistency of an existing SRS file.
+    ///
+    /// Checks that all G1 points encode consecutive powers of the same tau
+    /// and that g2_tau is consistent with the G1 sequence.
+    ///
+    /// ```text
+    /// genshi srs verify --file srs.bin
+    /// ```
+    Verify {
+        /// Path to the SRS file to verify.
+        #[arg(long)]
+        file: PathBuf,
+    },
 }
 
 // ============================================================================
@@ -386,6 +606,17 @@ pub fn run() -> ExitCode {
         Commands::Srs(SrsCmd::New { max_degree, output }) => {
             cmd_srs_new(max_degree, &output)
         }
+        Commands::Srs(SrsCmd::Import {
+            input,
+            max_degree,
+            output,
+        }) => cmd_srs_import(&input, max_degree, &output),
+        Commands::Srs(SrsCmd::Ceremony {
+            max_degree,
+            participants,
+            output,
+        }) => cmd_srs_ceremony(max_degree, participants, &output),
+        Commands::Srs(SrsCmd::Verify { file }) => cmd_srs_verify(&file),
         Commands::Circuits => cmd_circuits_list(),
         Commands::ExtractVk {
             circuit,
@@ -415,6 +646,15 @@ pub fn run() -> ExitCode {
             contract_name,
             pragma,
         } => cmd_emit_evm(&vk, &srs, &output, &contract_name, &pragma),
+        Commands::GenWitness { circuit, output } => {
+            cmd_gen_witness(&circuit, output.as_deref())
+        }
+        Commands::Prove {
+            circuit,
+            witness,
+            srs,
+            output,
+        } => cmd_prove(&circuit, &witness, &srs, &output),
         Commands::EmitPoseidon2 { output } => cmd_emit_poseidon2(&output),
         Commands::EmitLibs { output } => cmd_emit_libs(&output),
         Commands::Verify {
@@ -448,6 +688,184 @@ fn cmd_srs_new(max_degree: usize, output: &Path) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn cmd_srs_import(input: &Path, max_degree: usize, output: &Path) -> ExitCode {
+    let raw = match fs::read(input) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("failed to read ptau file {}: {e}", input.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let srs = match parse_ptau(&raw, max_degree) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ptau import failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let bytes = srs.save_to_bytes();
+    match fs::write(output, &bytes) {
+        Ok(()) => {
+            println!(
+                "imported ceremony SRS (max_degree={}, {} G1 points, {} bytes) to {}",
+                srs.max_degree(),
+                srs.size(),
+                bytes.len(),
+                output.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("failed to write SRS: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_srs_ceremony(max_degree: usize, participants: usize, output: &Path) -> ExitCode {
+    if participants == 0 {
+        eprintln!("participants must be at least 1");
+        return ExitCode::FAILURE;
+    }
+
+    let (srs, _receipts) = ceremony::run_ceremony(max_degree, participants);
+
+    let bytes = srs.save_to_bytes();
+    match fs::write(output, &bytes) {
+        Ok(()) => {
+            println!(
+                "wrote ceremony SRS (max_degree={}, {} participants, {} G1 points, {} bytes) to {}",
+                max_degree,
+                participants,
+                srs.g1_powers.len(),
+                bytes.len(),
+                output.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("failed to write SRS: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_srs_verify(file: &Path) -> ExitCode {
+    let srs = match load_srs(file) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+
+    match ceremony::verify_srs(&srs) {
+        Ok(()) => {
+            println!(
+                "OK: SRS is valid (max_degree={}, {} G1 points)",
+                srs.g1_powers.len() - 1,
+                srs.g1_powers.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("FAIL: SRS verification failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_gen_witness(circuit_name: &str, output: Option<&Path>) -> ExitCode {
+    let entry = match find_circuit(circuit_name) {
+        Some(e) => e,
+        None => return report_unknown_circuit(circuit_name),
+    };
+
+    let json = match (entry.witness_json)() {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("gen-witness failed for circuit `{circuit_name}`: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match output {
+        Some(path) => {
+            if let Err(e) = fs::write(path, json.as_bytes()) {
+                eprintln!("failed to write witness: {e}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "wrote witness for circuit `{circuit_name}` to {}",
+                path.display()
+            );
+        }
+        None => {
+            print!("{json}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_prove(
+    circuit_name: &str,
+    witness_path: &Path,
+    srs_path: &Path,
+    output_dir: &Path,
+) -> ExitCode {
+    let entry = match find_circuit(circuit_name) {
+        Some(e) => e,
+        None => return report_unknown_circuit(circuit_name),
+    };
+    let srs = match load_srs(srs_path) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let witness_json = match fs::read_to_string(witness_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to read witness {}: {e}", witness_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (proof_bytes, vk_bytes, pi_bytes) = match (entry.prove_from_json)(&witness_json, &srs) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("prove failed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Err(e) = fs::create_dir_all(output_dir) {
+        eprintln!("failed to create output dir: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let proof_path = output_dir.join("proof.bin");
+    let vk_path = output_dir.join("vk.bin");
+    let pi_path = output_dir.join("public_inputs.bin");
+
+    for (path, data, label) in [
+        (&proof_path, &proof_bytes, "proof"),
+        (&vk_path, &vk_bytes, "vk"),
+        (&pi_path, &pi_bytes, "public inputs"),
+    ] {
+        if let Err(e) = fs::write(path, data) {
+            eprintln!("failed to write {label}: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    println!(
+        "proved circuit `{circuit_name}` ({} public inputs)",
+        pi_bytes.len() / 32,
+    );
+    println!("  proof:         {} ({} bytes)", proof_path.display(), proof_bytes.len());
+    println!("  vk:            {} ({} bytes)", vk_path.display(), vk_bytes.len());
+    println!("  public_inputs: {} ({} bytes)", pi_path.display(), pi_bytes.len());
+    ExitCode::SUCCESS
 }
 
 fn cmd_circuits_list() -> ExitCode {
@@ -902,6 +1320,7 @@ description = "genshi ZK application scaffolded by `genshi new`"
 {{deps}}
 
 ark-bn254 = { version = "0.5", default-features = false }
+serde = { version = "1", features = ["derive"] }
 "#;
 
 const SCAFFOLD_LIB_RS: &str = r#"//! A sample genshi application scaffolded by `genshi new`.
@@ -920,9 +1339,13 @@ use genshi_core::circuit::Circuit;
 pub struct AddCircuit;
 
 /// Native witness for [`AddCircuit`].
+///
+/// Derives `serde::Deserialize` so the `genshi prove` command can read it
+/// from a JSON file (Form 1 of `genshi_cli::register!`).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct AddWitness {
-    pub a: Fr,
-    pub b: Fr,
+    pub a: u64,
+    pub b: u64,
 }
 
 impl Circuit for AddCircuit {
@@ -938,18 +1361,15 @@ impl Circuit for AddCircuit {
         builder: &mut UltraCircuitBuilder,
         w: &Self::Witness,
     ) -> Self::PublicInputs {
-        let a = builder.add_variable(w.a);
-        let b = builder.add_variable(w.b);
+        let a = builder.add_variable(Fr::from(w.a));
+        let b = builder.add_variable(Fr::from(w.b));
         let c = builder.add(a, b);
         builder.set_public(c);
-        [w.a + w.b]
+        [Fr::from(w.a) + Fr::from(w.b)]
     }
 
     fn dummy_witness() -> Self::Witness {
-        AddWitness {
-            a: Fr::from(0u64),
-            b: Fr::from(0u64),
-        }
+        AddWitness { a: 0, b: 0 }
     }
 }
 
@@ -1002,6 +1422,129 @@ You do not edit `src/bin/genshi.rs` — it is a one-line shim that calls
 "#;
 
 const SCAFFOLD_GITIGNORE: &str = "target/\n*.bin\n*.vk\n";
+
+// ============================================================================
+// ptau parser (snarkjs / Hermez format)
+// ============================================================================
+
+/// Parse a Powers of Tau `.ptau` file (snarkjs/Hermez binary format) and
+/// extract the BN254 G1/G2 points into a genshi SRS.
+///
+/// The `.ptau` format is a sequence of "sections" prefixed by a 12-byte
+/// magic header (`zk_s_n_a_r_k_s`). We only read:
+/// - Section 2: G1 powers (`τ^i · G1`)
+/// - Section 3: G2 powers (`τ^i · G2` — we only need index 0 and 1)
+///
+/// Points in .ptau files are little-endian uncompressed BN254 coordinates.
+fn parse_ptau(data: &[u8], max_degree: usize) -> Result<SRS, String> {
+    use ark_bn254::{G1Affine, G2Affine, Fq, Fq2};
+    use ark_ec::AffineRepr;
+
+    // --- Header ---
+    // First 4 bytes: magic "zks\n" or similar; varies by snarkjs version.
+    // We look for the sections by scanning section headers.
+    // snarkjs ptau binary layout:
+    //   [4 bytes magic] [4 bytes version] [4 bytes num_sections]
+    //   then for each section: [4 bytes section_type] [8 bytes section_size] [data...]
+
+    if data.len() < 12 {
+        return Err("ptau file too short".into());
+    }
+
+    let num_sections = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+    let mut offset = 12;
+
+    // Section catalog: find section 2 (G1 powers) and section 3 (G2 powers)
+    let mut g1_section: Option<(usize, usize)> = None; // (offset, size)
+    let mut g2_section: Option<(usize, usize)> = None;
+
+    for _ in 0..num_sections {
+        if offset + 12 > data.len() {
+            return Err("ptau section header truncated".into());
+        }
+        let section_type = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        let section_size = u64::from_le_bytes(data[offset + 4..offset + 12].try_into().unwrap()) as usize;
+        offset += 12;
+
+        if offset + section_size > data.len() {
+            return Err(format!(
+                "ptau section {section_type} claims {section_size} bytes but file too short"
+            ));
+        }
+
+        match section_type {
+            2 => g1_section = Some((offset, section_size)),
+            3 => g2_section = Some((offset, section_size)),
+            _ => {}
+        }
+        offset += section_size;
+    }
+
+    let (g1_off, g1_size) = g1_section.ok_or("ptau file missing section 2 (G1 powers)")?;
+    let (g2_off, g2_size) = g2_section.ok_or("ptau file missing section 3 (G2 powers)")?;
+
+    // --- Parse G1 points ---
+    // Each G1 point: 64 bytes (x: 32 bytes LE Fq, y: 32 bytes LE Fq)
+    let g1_point_size = 64;
+    let num_g1 = g1_size / g1_point_size;
+    let need = max_degree + 1;
+    if num_g1 < need {
+        return Err(format!(
+            "ptau has {num_g1} G1 points but max_degree={max_degree} requires {}",
+            need
+        ));
+    }
+
+    let mut g1_powers = Vec::with_capacity(need);
+    for i in 0..need {
+        let base = g1_off + i * g1_point_size;
+        let x = Fq::from_le_bytes_mod_order(&data[base..base + 32]);
+        let y = Fq::from_le_bytes_mod_order(&data[base + 32..base + 64]);
+        let point = G1Affine::new_unchecked(x, y);
+        if !point.is_on_curve() {
+            return Err(format!("G1 point {i} not on curve"));
+        }
+        g1_powers.push(point);
+    }
+
+    // --- Parse G2 points ---
+    // Each G2 point: 128 bytes (x: Fq2 = 64 bytes LE, y: Fq2 = 64 bytes LE)
+    // Fq2 layout: c0 (32 bytes LE) || c1 (32 bytes LE)
+    let g2_point_size = 128;
+    let num_g2 = g2_size / g2_point_size;
+    if num_g2 < 2 {
+        return Err(format!("ptau has {num_g2} G2 points, need at least 2"));
+    }
+
+    let read_g2 = |idx: usize| -> Result<G2Affine, String> {
+        let base = g2_off + idx * g2_point_size;
+        let x_c0 = Fq::from_le_bytes_mod_order(&data[base..base + 32]);
+        let x_c1 = Fq::from_le_bytes_mod_order(&data[base + 32..base + 64]);
+        let y_c0 = Fq::from_le_bytes_mod_order(&data[base + 64..base + 96]);
+        let y_c1 = Fq::from_le_bytes_mod_order(&data[base + 96..base + 128]);
+        let x = Fq2::new(x_c0, x_c1);
+        let y = Fq2::new(y_c0, y_c1);
+        let point = G2Affine::new_unchecked(x, y);
+        if !point.is_on_curve() {
+            return Err(format!("G2 point {idx} not on curve"));
+        }
+        Ok(point)
+    };
+
+    let g2 = read_g2(0)?;     // τ^0 · G2 = G2 generator
+    let g2_tau = read_g2(1)?;  // τ^1 · G2
+
+    // Sanity: g1_powers[0] should be the BN254 G1 generator
+    if g1_powers[0] != G1Affine::generator() {
+        return Err("G1 powers[0] is not the BN254 generator — file may be corrupt or for a different curve".into());
+    }
+
+    Ok(SRS {
+        g1_powers,
+        g2,
+        g2_tau,
+    })
+}
 
 // ============================================================================
 // Shared helpers
@@ -1212,6 +1755,12 @@ mod tests {
     fn test_scaffold_lib_rs_has_circuit_impl() {
         assert!(SCAFFOLD_LIB_RS.contains("impl Circuit for AddCircuit"));
         assert!(SCAFFOLD_LIB_RS.contains("genshi_cli::register!(AddCircuit, \"add\")"));
+    }
+
+    #[test]
+    fn test_scaffold_witness_derives_serialize() {
+        assert!(SCAFFOLD_LIB_RS.contains("serde::Serialize"));
+        assert!(SCAFFOLD_LIB_RS.contains("serde::Deserialize"));
     }
 
     #[test]
