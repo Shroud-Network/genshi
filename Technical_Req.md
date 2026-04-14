@@ -1,7 +1,7 @@
-# Janus Framework — Technical Specification
+# Genshi Framework — Technical Specification
 
 > Version 0.2 — April 2026
-> This document is the authoritative specification for the **Janus framework** only. It contains zero application-specific content. Shroud Pool, Cross-VM Bridge, and other consumer apps are specified in their own repositories.
+> This document is the authoritative specification for the **genshi framework** only. It contains zero application-specific content. Shroud Pool, Cross-VM Bridge, and other consumer apps are specified in their own repositories.
 
 ---
 
@@ -9,16 +9,16 @@
 
 | Field | Value |
 |---|---|
-| Name | `janus` |
+| Name | `genshi` |
 | Type | Rust library crates (Cargo workspace) |
 | Purpose | Generalized dual-VM zero-knowledge proving framework |
 | Target VMs (v1) | EVM (Ethereum, Avalanche, Monad, Base, Arbitrum, Polygon, all BN254-precompile chains) + Solana |
 | Primary runtime | Browser WASM (client-side proving) |
 | Secondary runtime | Native binary (server-side proving) |
 | Foundation | Arkworks ecosystem |
-| Distribution | Published to crates.io as `janus-core`, `janus-evm`, `janus-solana`, `janus-wasm`, `janus-cli` |
+| Distribution | Published to crates.io as `genshi-core`, `genshi-evm`, `genshi-solana`, `genshi-wasm`, `genshi-cli` |
 
-Janus is a framework. It ships no applications. Consumer apps (Shroud Pool, bridges, private DEXes, etc.) live in their own repositories and depend on Janus as a regular Cargo dependency.
+genshi is a framework. It ships no applications. Consumer apps (Shroud Pool, bridges, private DEXes, etc.) live in their own repositories and depend on genshi as a regular Cargo dependency.
 
 ---
 
@@ -31,7 +31,7 @@ This is the framework's only promise. Everything else follows from it.
 Consequences of this property:
 - Single proof format, single transcript hash, single public-input encoding
 - Verifier code paths are the same on native, WASM, and BPF (only the pairing primitive is swapped for the target)
-- Any circuit written against Janus inherits dual-VM verification for free
+- Any circuit written against genshi inherits dual-VM verification for free
 - Cross-VM applications (bridges, multi-chain privacy) become property-of-the-framework, not per-app engineering
 
 ---
@@ -57,7 +57,7 @@ Consequences of this property:
 
 - **Poseidon2** over BN254 scalar field
 - Arities supported: t=2, t=3, t=4, t=5
-- Parameters defined once in `janus-core/src/crypto/poseidon2.rs`, imported by all framework components and all consumer apps
+- Parameters defined once in `genshi-core/src/crypto/poseidon2.rs`, imported by all framework components and all consumer apps
 - Parameter mismatch across native/WASM/BPF is a P0 bug class
 
 ### 3.4 Transcript Hash
@@ -83,7 +83,7 @@ Consequences of this property:
 
 ### 3.7 `no_std` Requirement
 
-`janus-core` **must** compile to:
+`genshi-core` **must** compile to:
 - `wasm32-unknown-unknown` (browser)
 - Solana BPF (`sbf-solana-solana`)
 - Native (x86_64, aarch64)
@@ -106,7 +106,7 @@ from the same source with the same output semantics. This is what makes the dual
 
 ### 4.2 Hash: Poseidon2
 
-Single canonical implementation in `janus-core/src/crypto/poseidon2.rs`. Parameters:
+Single canonical implementation in `genshi-core/src/crypto/poseidon2.rs`. Parameters:
 
 - Full rounds: 8
 - Partial rounds: 56
@@ -132,17 +132,17 @@ Generators G and H are derived via hash-to-curve from a nothing-up-my-sleeve see
 - Public input selector
 - Lookup table registry
 
-API: `janus_core::arithmetization::UltraCircuitBuilder` (renamed from `ultra_circuit_builder.rs`)
+API: `genshi_core::arithmetization::UltraCircuitBuilder` (renamed from `ultra_circuit_builder.rs`)
 
 ### 4.5 Gadgets (Application-Agnostic Only)
 
-Janus ships only gadgets with no domain semantics. Specifically:
+genshi ships only gadgets with no domain semantics. Specifically:
 
-- **N-ary Poseidon2 Merkle inclusion** (`janus_core::gadgets::merkle`): generic over tree depth, arity, and leaf type. Apps choose their own depth and arity.
-- **64-bit range proof** (`janus_core::gadgets::range`): via lookup table. Parameterized over bit-width.
-- **Poseidon2 in-circuit hasher** (`janus_core::gadgets::poseidon2`): arity-generic.
+- **N-ary Poseidon2 Merkle inclusion** (`genshi_core::gadgets::merkle`): generic over tree depth, arity, and leaf type. Apps choose their own depth and arity.
+- **64-bit range proof** (`genshi_core::gadgets::range`): via lookup table. Parameterized over bit-width.
+- **Poseidon2 in-circuit hasher** (`genshi_core::gadgets::poseidon2`): arity-generic.
 
-**Gadgets explicitly not shipped by Janus** (these are domain-specific and live in consumer apps):
+**Gadgets explicitly not shipped by genshi** (these are domain-specific and live in consumer apps):
 - Nullifier derivation (depends on what "a nullifier" means to the app)
 - Note commitment (depends on what "a note" means to the app)
 - Any gadget whose semantics assume a specific state model
@@ -177,17 +177,17 @@ pub trait Circuit {
 ```
 
 Once an app implements `Circuit`, the framework provides:
-- `janus_core::proving::prove::<C>(witness, srs) -> (Proof, PublicInputs)`
-- `janus_core::proving::verify::<C>(proof, vk, public_inputs, srs) -> bool`
-- `janus_core::proving::extract_vk::<C>(srs) -> VerificationKey`
-- `janus_evm::emit_verifier_sol::<C>(vk, opts) -> String`
-- `janus_solana::verify_with_syscalls(proof, vk, public_inputs, srs) -> bool`
+- `genshi_core::proving::prove::<C>(witness, srs) -> (Proof, PublicInputs)`
+- `genshi_core::proving::verify::<C>(proof, vk, public_inputs, srs) -> bool`
+- `genshi_core::proving::extract_vk::<C>(srs) -> VerificationKey`
+- `genshi_evm::emit_verifier_sol::<C>(vk, opts) -> String`
+- `genshi_solana::verify_with_syscalls(proof, vk, public_inputs, srs) -> bool`
 
 The app never writes proving or verifier code. It only writes `impl Circuit`.
 
 ### 4.7 Prover
 
-`janus_core::proving::prover`:
+`genshi_core::proving::prover`:
 
 ```rust
 pub fn prove<C: Circuit>(
@@ -209,7 +209,7 @@ Pipeline:
 
 ### 4.8 Verifier
 
-`janus_core::proving::verifier`:
+`genshi_core::proving::verifier`:
 
 ```rust
 pub fn verify<C: Circuit>(
@@ -235,7 +235,7 @@ All three verifiers use the **same `verify_prepare()` code path**. Only the pair
 
 ### 4.9 Verifier Exports
 
-**EVM** (`janus-evm`):
+**EVM** (`genshi-evm`):
 ```rust
 pub fn generate_verifier_sol(
     vk: &VerificationKey,
@@ -244,7 +244,7 @@ pub fn generate_verifier_sol(
 ```
 Produces a pure `verify(bytes proof, uint256[] publicInputs) -> bool` Solidity contract. No app logic, no state, no events. Uses only BN254 precompiles: ecAdd (0x06), ecMul (0x07), ecPairing (0x08), modexp (0x05). Contract name, pragma, and output format configurable via `EmitterOptions`.
 
-**Solana** (`janus-solana`):
+**Solana** (`genshi-solana`):
 ```rust
 pub fn verify_with_syscalls(
     proof: &Proof,
@@ -287,7 +287,7 @@ Proof layout:
 
 Total: ~1,216 bytes (current). Target after Zeromorph migration: ~500 bytes.
 
-Exact layout is defined in `janus-core::proving::serialization::{proof_to_bytes, proof_from_bytes}`. Both functions are the canonical source of truth.
+Exact layout is defined in `genshi-core::proving::serialization::{proof_to_bytes, proof_from_bytes}`. Both functions are the canonical source of truth.
 
 ### 5.2 Verification Key Byte Format
 
@@ -316,9 +316,9 @@ Public inputs are ordered BN254 scalar field elements. Apps are responsible for 
 
 **On EVM**: `uint256[]` calldata, each element is an Fr in **big-endian**, left-padded to 32 bytes. `uint256` values must be less than the BN254 scalar field modulus; out-of-range values cause `verify()` to revert.
 
-**On Solana**: `&[u8]` concatenation of Fr elements in **little-endian**, each 32 bytes. The framework provides `public_inputs_to_bytes_le()` and `public_inputs_to_bytes_be()` in `janus-core::serialization`.
+**On Solana**: `&[u8]` concatenation of Fr elements in **little-endian**, each 32 bytes. The framework provides `public_inputs_to_bytes_le()` and `public_inputs_to_bytes_be()` in `genshi-core::serialization`.
 
-**The values are identical** across chains — only the byte ordering differs. An app that uses `janus-core::serialization` helpers will always produce consistent encodings.
+**The values are identical** across chains — only the byte ordering differs. An app that uses `genshi-core::serialization` helpers will always produce consistent encodings.
 
 ### 5.4 SRS Byte Format
 
@@ -329,19 +329,19 @@ Public inputs are ordered BN254 scalar field elements. Apps are responsible for 
 [g2_tau:             128 bytes]
 ```
 
-Defined in `janus-core::proving::srs::{save_to_bytes, load_from_bytes}`.
+Defined in `genshi-core::proving::srs::{save_to_bytes, load_from_bytes}`.
 
 ---
 
 ## 6. Crate Architecture
 
 ```
-janus/                                    ← workspace root
+genshi/                                    ← workspace root
 ├── Cargo.toml                             workspace manifest
 ├── README.md
 ├── Technical_Spec.md                      this file (moved here)
 ├── crates/
-│   ├── janus-core/                        no_std library
+│   ├── genshi-core/                        no_std library
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs                     public API re-exports
@@ -367,33 +367,33 @@ janus/                                    ← workspace root
 │   │           ├── transcript.rs          Keccak-256
 │   │           └── serialization.rs       canonical byte formats
 │   │
-│   ├── janus-evm/                         Solidity emitter + contract libs
+│   ├── genshi-evm/                         Solidity emitter + contract libs
 │   │   ├── Cargo.toml
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── solidity_emitter.rs        generic: generate_verifier_sol<C>()
 │   │   │   └── poseidon2_sol.rs           Poseidon2 Solidity library generator
 │   │   └── contracts/library/
-│   │       ├── JanusVerifier.sol          reusable verifier template
+│   │       ├── genshiVerifier.sol          reusable verifier template
 │   │       ├── Poseidon2.sol              reusable Poseidon2 library
 │   │       ├── MerkleTree.sol             N-ary Poseidon2 Merkle tree
 │   │       ├── NullifierSet.sol           mapping(bytes32 => bool) + helpers
 │   │       └── RootHistory.sol            circular buffer of recent roots
 │   │
-│   ├── janus-solana/                      no_std library for BPF verification
+│   ├── genshi-solana/                      no_std library for BPF verification
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── crypto/mod.rs              G1/G2 encoding, pairing_check_2
 │   │       └── verify.rs                  verify_with_syscalls()
 │   │
-│   ├── janus-wasm/                        library crate, WASM helpers
+│   ├── genshi-wasm/                        library crate, WASM helpers
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       └── lib.rs                     prove_with_circuit<C>(), panic hook,
 │   │                                      JsError conversions, getrandom setup
 │   │
-│   └── janus-cli/                         framework tooling binary
+│   └── genshi-cli/                         framework tooling binary
 │       ├── Cargo.toml
 │       └── src/
 │           └── main.rs                    gen-srs, emit-evm, emit-sol,
@@ -404,9 +404,9 @@ janus/                                    ← workspace root
     └── prove_verify.rs                    generic benchmarks on reference circuits
 ```
 
-**Critical invariant**: The `janus/` directory must contain zero references to application concepts. This is enforced by:
+**Critical invariant**: The `genshi/` directory must contain zero references to application concepts. This is enforced by:
 ```bash
-grep -rE "(note|nullifier|pool|shroud|bridge|shield|deposit|transfer|withdraw)" janus/
+grep -rE "(note|nullifier|pool|shroud|bridge|shield|deposit|transfer|withdraw)" genshi/
 ```
 returning only matches in unrelated contexts (e.g., the word "transfer" in "transfer learning", if that ever appeared, which it shouldn't).
 
@@ -414,16 +414,16 @@ returning only matches in unrelated contexts (e.g., the word "transfer" in "tran
 
 ## 7. Dependencies
 
-### Workspace-level (`janus/Cargo.toml`)
+### Workspace-level (`genshi/Cargo.toml`)
 
 ```toml
 [workspace]
 members = [
-    "crates/janus-core",
-    "crates/janus-evm",
-    "crates/janus-solana",
-    "crates/janus-wasm",
-    "crates/janus-cli",
+    "crates/genshi-core",
+    "crates/genshi-evm",
+    "crates/genshi-solana",
+    "crates/genshi-wasm",
+    "crates/genshi-cli",
 ]
 resolver = "2"
 
@@ -439,7 +439,7 @@ ark-serialize = "0.5"
 tiny-keccak  = { version = "2.0", features = ["keccak"] }
 ```
 
-### `janus-core` features
+### `genshi-core` features
 
 ```toml
 [features]
@@ -455,9 +455,9 @@ No `serde` feature in the framework — serialization is done via explicit canon
 
 | Component | EVM (any BN254 chain) | Solana |
 |---|---|---|
-| Proof generation | Browser WASM (apps wrap `janus-wasm`) | Browser WASM (same) |
+| Proof generation | Browser WASM (apps wrap `genshi-wasm`) | Browser WASM (same) |
 | Proof format | PLONK-KZG, Keccak transcript, canonical bytes | PLONK-KZG, Keccak transcript, canonical bytes |
-| On-chain verifier | Solidity contract (from `janus-evm::generate_verifier_sol`) | Rust BPF (from `janus-solana::verify_with_syscalls`) |
+| On-chain verifier | Solidity contract (from `genshi-evm::generate_verifier_sol`) | Rust BPF (from `genshi-solana::verify_with_syscalls`) |
 | Pairing primitive | ecPairing precompile (0x08) | `sol_alt_bn128_pairing` syscall |
 | Hash primitive | keccak256 opcode | `sol_keccak256` syscall |
 | Public input encoding | `uint256[]` big-endian | `&[u8]` little-endian (same values) |
@@ -475,16 +475,16 @@ These are non-negotiable. Violation is a framework-level bug.
 |---|---|---|
 | J1 | One proof, two VMs | Same `verify_prepare()` code path on native/WASM/BPF; only the pairing primitive swaps |
 | J2 | Canonical proof bytes | `proof_to_bytes` / `proof_from_bytes` are the only valid serialization; version-locked in the ABI section above |
-| J3 | Keccak transcript everywhere | Single implementation in `janus-core::proving::transcript`; no alternatives compiled in |
+| J3 | Keccak transcript everywhere | Single implementation in `genshi-core::proving::transcript`; no alternatives compiled in |
 | J4 | Canonical public input encoding | `public_inputs_to_bytes_be` / `public_inputs_to_bytes_le` are the only valid encoders |
-| J5 | Poseidon2 parameters canonical | One parameter set in `janus-core::crypto::poseidon2`; tested across all compilation targets |
+| J5 | Poseidon2 parameters canonical | One parameter set in `genshi-core::crypto::poseidon2`; tested across all compilation targets |
 | J6 | No cross-compilation drift | Test suite produces bit-identical outputs on native/WASM/BPF for identical inputs |
 | J7 | SRS from verifiable ceremony | Aztec PoT only; production code rejects custom SRS |
-| J8 | `no_std` compatibility | `janus-core` compiles to WASM and BPF from the same source as native |
+| J8 | `no_std` compatibility | `genshi-core` compiles to WASM and BPF from the same source as native |
 | J9 | EVM precompile compatibility | Solidity verifier uses only ecAdd/ecMul/ecPairing/modexp — no chain-specific opcodes |
 | J10 | Lookup table completeness | Every looked-up value must exist in table; extra entries that enable range bypass are rejected |
-| J11 | No application code in framework | `janus/` directory contains zero references to domain concepts |
-| J12 | Framework invariants hold for every circuit | Any `impl Circuit` that compiles against Janus inherits all of the above guarantees |
+| J11 | No application code in framework | `genshi/` directory contains zero references to domain concepts |
+| J12 | Framework invariants hold for every circuit | Any `impl Circuit` that compiles against genshi inherits all of the above guarantees |
 
 ---
 
@@ -497,11 +497,11 @@ This section is a stub for v1. Full guide will ship with the v1 release.
 ```rust
 // my-app/Cargo.toml
 [dependencies]
-janus-core = "0.1"
+genshi-core = "0.1"
 
 // my-app/src/lib.rs
-use janus_core::{Circuit, UltraCircuitBuilder, Fr};
-use janus_core::gadgets::{merkle, range, poseidon2};
+use genshi_core::{Circuit, UltraCircuitBuilder, Fr};
+use genshi_core::gadgets::{merkle, range, poseidon2};
 
 pub struct HelloWorldCircuit;
 
@@ -535,15 +535,15 @@ impl Circuit for HelloWorldCircuit {
 ### 10.2 Going Dual-VM
 
 ```rust
-use janus_core::proving::{prove, SRS};
-use janus_evm::generate_verifier_sol;
-use janus_solana::verify_with_syscalls;
+use genshi_core::proving::{prove, SRS};
+use genshi_evm::generate_verifier_sol;
+use genshi_solana::verify_with_syscalls;
 
 let srs = SRS::load_from_bytes(include_bytes!("srs.bin"));
 let (proof, pi) = prove::<HelloWorldCircuit>(&witness, &srs);
 
 // EVM: emit a one-shot verifier contract
-let vk = janus_core::proving::extract_vk::<HelloWorldCircuit>(&srs);
+let vk = genshi_core::proving::extract_vk::<HelloWorldCircuit>(&srs);
 let sol_source = generate_verifier_sol(&vk, EmitterOptions::named("HelloWorldVerifier"));
 std::fs::write("HelloWorldVerifier.sol", sol_source)?;
 
@@ -555,7 +555,7 @@ The contents of `proof` and `pi` are identical between chains. The only per-chai
 
 ### 10.3 Full Application Authoring Guide
 
-Will ship with v1 release as a separate document: `janus/docs/authoring-guide.md`.
+Will ship with v1 release as a separate document: `genshi/docs/authoring-guide.md`.
 
 ---
 
@@ -567,7 +567,7 @@ Will ship with v1 release as a separate document: `janus/docs/authoring-guide.md
 
 ### R2: Poseidon2 Parameter Drift (HIGHEST)
 - Wrong parameters = silent failure
-- **Mitigation**: Single source of truth in `janus-core::crypto::poseidon2`; exhaustive cross-target test suite
+- **Mitigation**: Single source of truth in `genshi-core::crypto::poseidon2`; exhaustive cross-target test suite
 - **Warning**: Solana's `sol_poseidon` syscall implements Poseidon (not Poseidon2); must never be used in the framework
 
 ### R3: Grumpkin Correctness
@@ -593,11 +593,11 @@ Will ship with v1 release as a separate document: `janus/docs/authoring-guide.md
 
 ### R8: Public Input Encoding Drift
 - Off-by-one in endianness or padding between EVM and Solana breaks G1
-- **Mitigation**: Single implementation in `janus-core::serialization`; all apps must use these helpers; integration tests verify byte-level equivalence of encoded values
+- **Mitigation**: Single implementation in `genshi-core::serialization`; all apps must use these helpers; integration tests verify byte-level equivalence of encoded values
 
 ### R9: Framework/App Boundary Leakage
-- Domain concepts creeping into `janus-core` breaks generality
-- **Mitigation**: Grep-based CI check forbidding domain keywords in `janus/`; code review rule
+- Domain concepts creeping into `genshi-core` breaks generality
+- **Mitigation**: Grep-based CI check forbidding domain keywords in `genshi/`; code review rule
 
 ### R10: Circuit Upgrade Path
 - Circuit changes = new VK + new on-chain verifier
@@ -608,7 +608,7 @@ Will ship with v1 release as a separate document: `janus/docs/authoring-guide.md
 ## 12. Build Sequence
 
 ### Phase 0 (COMPLETE)
-Pre-Janus work under the `shroud-honk` name:
+Pre-genshi work under the `shroud-honk` name:
 - Crypto primitives (Poseidon2, Pedersen, Grumpkin)
 - Constraint system (UltraCircuitBuilder, lookup tables)
 - Gadgets (Merkle, range, Poseidon2 in-circuit)
@@ -618,22 +618,22 @@ Pre-Janus work under the `shroud-honk` name:
 - Solidity emitter, Solana BPF verifier, WASM SDK, CLI
 - **159 tests passing across all crates**
 
-### Phase 1: Janus/App Split (CURRENT)
-- Create `janus/` subdirectory with independent workspace
+### Phase 1: genshi/App Split (CURRENT)
+- Create `genshi/` subdirectory with independent workspace
 - Create `shroud-pool/` subdirectory with independent workspace
-- Move framework code to `janus/crates/janus-*`
+- Move framework code to `genshi/crates/genshi-*`
 - Move Shroud-specific code (Note, Transfer, Withdraw, ShieldedPool.sol) to `shroud-pool/`
 - Rename crates and update imports
 - Delete old top-level `Cargo.toml` and `crates/` directory
 - Success: all 159 tests still pass, both workspaces build independently
 
 ### Phase 2: Circuit Trait & Generic Prover API
-- Add `janus-core::Circuit` trait
+- Add `genshi-core::Circuit` trait
 - Make `prover::prove` and `verifier::verify` generic over `C: Circuit`
 - Port Shroud Pool's Transfer/Withdraw to `impl Circuit`
 - Make Solidity emitter generic over VK shape (no hardcoded public input count, no hardcoded contract name)
-- Make `janus-wasm` provide `prove_with_circuit::<C>()` helper
-- Remove Shroud-specific functions from `janus-wasm` (`prove_transfer`, `prove_withdraw`, `compute_commitment`, `derive_nullifier`)
+- Make `genshi-wasm` provide `prove_with_circuit::<C>()` helper
+- Remove Shroud-specific functions from `genshi-wasm` (`prove_transfer`, `prove_withdraw`, `compute_commitment`, `derive_nullifier`)
 - Framework CI: grep for domain keywords; must be empty
 
 ### Phase 3: Performance Tier 0 (Custom Gates)
@@ -642,27 +642,27 @@ Pre-Janus work under the `shroud-honk` name:
 - Plookup grand product argument
 - Benchmark: Shroud Pool Transfer circuit should drop from ~7,400 to ~2,000 constraints
 
-### Phase 4: Shroud Pool v1 on Janus
+### Phase 4: Shroud Pool v1 on genshi
 - Shroud Pool's circuits use the new Circuit trait
-- Shroud Pool ships its own app-specific WASM cdylib using `janus-wasm` helpers
+- Shroud Pool ships its own app-specific WASM cdylib using `genshi-wasm` helpers
 - Shroud Pool ships its own TypeScript SDK
-- Deploy ShieldedPool.sol on Avalanche Fuji (imports `JanusVerifier` from `janus-evm`)
-- Deploy Solana Anchor program (imports `janus-solana`)
+- Deploy ShieldedPool.sol on Avalanche Fuji (imports `genshiVerifier` from `genshi-evm`)
+- Deploy Solana Anchor program (imports `genshi-solana`)
 - Success: end-to-end deposit → transfer → withdraw on both chains using one proof
 
 ### Phase 5: Cross-VM Bridge (Second Consumer — Validates Generalization)
 - Separate repository
 - Defines its own `BridgeCircuit`, `BridgeNote` (different from Shroud Pool's Note)
-- Ships `BridgePool.sol` + Solana bridge program, both importing Janus verifiers
+- Ships `BridgePool.sol` + Solana bridge program, both importing genshi verifiers
 - Success: one proof burns on source chain, mints on destination chain
 
 ### Phase 6: Framework v1 Release
-- Publish `janus-core`, `janus-evm`, `janus-solana`, `janus-wasm`, `janus-cli` to crates.io
-- Publish `janus/docs/authoring-guide.md`
+- Publish `genshi-core`, `genshi-evm`, `genshi-solana`, `genshi-wasm`, `genshi-cli` to crates.io
+- Publish `genshi/docs/authoring-guide.md`
 - Accept the first external consumer
 
 ### Phase 7: Audit + Mainnet
-- Professional audit of `janus-core` and `janus-evm`
+- Professional audit of `genshi-core` and `genshi-evm`
 - Mainnet deployment of Shroud Pool
 - Bug bounty
 
@@ -682,7 +682,7 @@ Pre-Janus work under the `shroud-honk` name:
 
 ---
 
-## 14. Out of Scope for Janus v1
+## 14. Out of Scope for genshi v1
 
 - Any consumer application (Shroud Pool, bridge, DEX, payroll, institutional channels)
 - Recursion / proof aggregation (post-v1 roadmap item)
@@ -693,4 +693,4 @@ Pre-Janus work under the `shroud-honk` name:
 - Folding schemes (Nova, ProtoStar) — post-v1 roadmap item
 - ZK-friendly DSL beyond the pure-Rust `Circuit` trait
 
-Anything in this list is **explicitly** not a v1 feature and should not be added to `janus-core` until the framework/app boundary has been proven by at least two independent consumers (Shroud Pool + Bridge).
+Anything in this list is **explicitly** not a v1 feature and should not be added to `genshi-core` until the framework/app boundary has been proven by at least two independent consumers (Shroud Pool + Bridge).
