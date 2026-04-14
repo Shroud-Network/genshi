@@ -1,0 +1,15 @@
+[package]
+name = "genshi-evm"
+description = "EVM Solidity verifier generation for the genshi framework (BN254 precompiles, Keccak transcript)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+genshi-core = { workspace = true }
+ark-bn254 = { workspace = true }
+ark-ff = { workspace = true }
+ark-ec = { workspace = true }
+ark-serialize = { workspace = true }
