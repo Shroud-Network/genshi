@@ -1,27 +1,27 @@
-# Janus
+# Genshi
 
 ## A Generalized Dual-VM Zero-Knowledge Proving Framework
 
 Version 0.2 — April 2026
 Authors: Siddharth Manjul, Amit Sagar
 
-> **Janus** (n.) — the two-faced Roman god of gates, beginnings, and transitions. In this framework, Janus produces a **single proof that verifies bytewise-identically on two different virtual machines**: EVM and Solana.
+> **genshi** (n.) — the two-faced Roman god of gates, beginnings, and transitions. In this framework, genshi produces a **single proof that verifies bytewise-identically on two different virtual machines**: EVM and Solana.
 
 ---
 
-## What Janus Is
+## What genshi Is
 
-Janus is a Rust-native zero-knowledge proving framework designed around a single load-bearing property:
+genshi is a Rust-native zero-knowledge proving framework designed around a single load-bearing property:
 
 > **One proof, written once, verifies on EVM and Solana without modification.**
 
 The same proof byte string passes verification through the Solidity verifier on any EVM chain (Ethereum, Avalanche, Monad, Base, Arbitrum) and through the Rust BPF verifier on Solana. Public inputs use the same encoding. The transcript is Keccak on both sides. There is no per-chain reproving, no per-chain proof format, no per-chain circuit fork.
 
-Janus is a **framework**, not an application. It has zero opinions about notes, accounts, balances, trees, or privacy schemes. Any team can write a circuit against Janus's primitives and inherit dual-VM verification for free.
+genshi is a **framework**, not an application. It has zero opinions about notes, accounts, balances, trees, or privacy schemes. Any team can write a circuit against genshi's primitives and inherit dual-VM verification for free.
 
 ---
 
-## Why Janus Exists
+## Why genshi Exists
 
 The ZK tooling market today forces a choice between three bad options:
 
@@ -31,7 +31,7 @@ The ZK tooling market today forces a choice between three bad options:
 
 None of these treat **"the same proof verifies on both major L1 ecosystems"** as a first-class framework invariant. Every team that wants dual-VM privacy or dual-VM bridging ends up reimplementing verification glue, or worse, generating two separate proofs.
 
-Janus exists to make that invariant load-bearing and automatic. A developer writes a circuit once in Rust, and the framework produces:
+genshi exists to make that invariant load-bearing and automatic. A developer writes a circuit once in Rust, and the framework produces:
 
 - A client-side prover (browser WASM + native CLI)
 - A Solidity verifier contract
@@ -45,7 +45,7 @@ All three verify the same proof bytes. No adapter layer. No re-encoding.
 
 ### Two-layer separation
 
-Janus is deliberately split into two independent layers:
+genshi is deliberately split into two independent layers:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -53,31 +53,31 @@ Janus is deliberately split into two independent layers:
 │                                                              │
 │  Shroud Pool │ Cross-VM Bridge │ Private DEX │ Payroll │ …  │
 │                                                              │
-│  Each app defines its own circuits using Janus primitives.  │
-│  Each app ships its own contracts that import the Janus     │
+│  Each app defines its own circuits using genshi primitives.  │
+│  Each app ships its own contracts that import the genshi     │
 │  verifier. Each app inherits dual-VM verification for free. │
 └───────────────────────────┬─────────────────────────────────┘
-                            │ depends on janus-* crates
+                            │ depends on genshi-* crates
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  Janus Framework Layer                      │
+│                  genshi Framework Layer                      │
 │                                                              │
-│  janus-core   — constraint system, gadgets, prover, verifier│
-│  janus-evm    — Solidity verifier + reusable contract libs  │
-│  janus-solana — Rust BPF verifier                           │
-│  janus-wasm   — WASM helpers for browser provers            │
-│  janus-cli    — tooling (SRS gen, verifier emit, inspect)   │
+│  genshi-core   — constraint system, gadgets, prover, verifier│
+│  genshi-evm    — Solidity verifier + reusable contract libs  │
+│  genshi-solana — Rust BPF verifier                           │
+│  genshi-wasm   — WASM helpers for browser provers            │
+│  genshi-cli    — tooling (SRS gen, verifier emit, inspect)   │
 │                                                              │
 │  Zero application-specific code. Zero references to notes,  │
 │  pools, nullifiers, bridges, or any domain concept.          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The application layer is not distributed with the framework. Janus is published to crates.io as an independent set of crates. Applications live in their own repositories and depend on Janus as a standard Cargo dependency.
+The application layer is not distributed with the framework. genshi is published to crates.io as an independent set of crates. Applications live in their own repositories and depend on genshi as a standard Cargo dependency.
 
 ### Framework primitives
 
-Janus provides:
+genshi provides:
 
 - **Curve substrate.** Grumpkin (native to BN254's scalar field) for in-circuit EC ops. BN254 G1/G2 for verifier-side pairings. No alternative curves in v1.
 - **Hash primitives.** Poseidon2 over BN254 with multiple arities (t=2, t=3, t=4, t=5). Identical parameters across prover, EVM verifier, Solana verifier, and SDK. Single source of truth; parameter drift is a P0 bug class.
@@ -86,8 +86,8 @@ Janus provides:
 - **Proving system.** PLONK with KZG commitments on BN254. Universal setup — Aztec's Powers of Tau ceremony, never repeated. No per-circuit ceremony, ever.
 - **Transcript.** Keccak-256 Fiat-Shamir on every side (prover, EVM verifier, Solana verifier, WASM, CLI). Native opcode on EVM, syscall-accessible on Solana.
 - **Verifier exports.**
-  - **EVM**: `JanusVerifier.sol` template using BN254 precompiles (ecAdd 0x06, ecMul 0x07, ecPairing 0x08, modexp 0x05). Generated from any verification key. Target ≤500K gas per verify.
-  - **Solana**: `janus-solana` crate compiled to BPF using `sol_alt_bn128_*` syscalls. Target ≤1.4M CU per verify.
+  - **EVM**: `genshiVerifier.sol` template using BN254 precompiles (ecAdd 0x06, ecMul 0x07, ecPairing 0x08, modexp 0x05). Generated from any verification key. Target ≤500K gas per verify.
+  - **Solana**: `genshi-solana` crate compiled to BPF using `sol_alt_bn128_*` syscalls. Target ≤1.4M CU per verify.
 - **Reusable Solidity libraries.** `Poseidon2.sol`, `MerkleTree.sol`, `NullifierSet.sol`, `RootHistory.sol` — building blocks apps can import without reinventing the wheel.
 
 ### Framework invariants
@@ -97,15 +97,15 @@ These are non-negotiable and enforced structurally, not by convention:
 | # | Invariant | Enforcement |
 |---|---|---|
 | J1 | One proof, two VMs | Same code paths in `verify_prepare()` across native/WASM/BPF; only the pairing primitive is swapped |
-| J2 | Keccak transcript everywhere | Single implementation in `janus-core`; no alternatives |
-| J3 | Canonical proof byte format | Fixed uncompressed G1/G2/Fr encoding in `janus-core::serialization` |
+| J2 | Keccak transcript everywhere | Single implementation in `genshi-core`; no alternatives |
+| J3 | Canonical proof byte format | Fixed uncompressed G1/G2/Fr encoding in `genshi-core::serialization` |
 | J4 | Canonical public input encoding | BN254 field elements, fixed-width, documented endianness per VM (big-endian EVM, little-endian Solana, same values) |
-| J5 | No application code in the framework | Grep-enforced: `janus/` must contain zero references to "note", "pool", "nullifier", "bridge", "shroud" in source or docs |
+| J5 | No application code in the framework | Grep-enforced: `genshi/` must contain zero references to "note", "pool", "nullifier", "bridge", "shroud" in source or docs |
 | J6 | SRS from verifiable ceremony | Aztec PoT only; custom SRS forbidden in production |
-| J7 | `no_std` compatibility | `janus-core` must compile to `wasm32-unknown-unknown` and Solana BPF from the same source |
+| J7 | `no_std` compatibility | `genshi-core` must compile to `wasm32-unknown-unknown` and Solana BPF from the same source |
 | J8 | No cross-compilation parameter drift | Test suite produces bit-identical outputs across native/WASM/BPF targets |
 
-### What Janus explicitly does not ship
+### What genshi explicitly does not ship
 
 - Any circuit with domain semantics (no `TransferCircuit`, no `BridgeCircuit`)
 - Any opinionated data structure (no fixed Merkle depth, no nullifier format, no note layout)
@@ -136,15 +136,15 @@ UltraHonk's verifier cost is constant in proof size, not in circuit size, which 
 
 ---
 
-## How Applications Consume Janus
+## How Applications Consume genshi
 
-An application is any crate that depends on `janus-core` (plus optionally `janus-evm`, `janus-solana`, `janus-wasm`) and defines one or more circuits implementing the `Circuit` trait.
+An application is any crate that depends on `genshi-core` (plus optionally `genshi-evm`, `genshi-solana`, `genshi-wasm`) and defines one or more circuits implementing the `Circuit` trait.
 
 Minimal app skeleton:
 
 ```rust
-use janus_core::{Circuit, Builder, Prover, Verifier, SRS};
-use janus_core::gadgets::{merkle, range, poseidon2};
+use genshi_core::{Circuit, Builder, Prover, Verifier, SRS};
+use genshi_core::gadgets::{merkle, range, poseidon2};
 
 pub struct MyAppCircuit {
     // private witness fields
@@ -156,7 +156,7 @@ impl Circuit for MyAppCircuit {
     const ID: &'static str = "my-app.main";
 
     fn synthesize(builder: &mut Builder, witness: &Self::Witness) -> Self::PublicInputs {
-        // use janus_core::gadgets to assemble constraints
+        // use genshi_core::gadgets to assemble constraints
         // return the public input wires
     }
 }
@@ -164,21 +164,21 @@ impl Circuit for MyAppCircuit {
 
 Then the app:
 
-1. Writes its own contracts (Solidity + Anchor) that import `JanusVerifier.sol` and `janus-solana::verify_with_syscalls`
-2. Writes its own SDK (TypeScript typically) that calls a small app-specific WASM cdylib using `janus-wasm` helpers
+1. Writes its own contracts (Solidity + Anchor) that import `genshiVerifier.sol` and `genshi-solana::verify_with_syscalls`
+2. Writes its own SDK (TypeScript typically) that calls a small app-specific WASM cdylib using `genshi-wasm` helpers
 3. Ships independently of the framework, on its own release cadence
 
-An app never modifies Janus. If an app needs something the framework doesn't provide, the choice is either to add it as an app-level extension or to upstream it as a framework primitive — but only if it's genuinely application-agnostic.
+An app never modifies genshi. If an app needs something the framework doesn't provide, the choice is either to add it as an app-level extension or to upstream it as a framework primitive — but only if it's genuinely application-agnostic.
 
 ---
 
 ## First Consumer: Shroud Pool
 
-The first application built on Janus is **Shroud Pool** — an institutional privacy pool implementing private deposit, private transfer, and private withdraw operations using UTXO-style note commitments.
+The first application built on genshi is **Shroud Pool** — an institutional privacy pool implementing private deposit, private transfer, and private withdraw operations using UTXO-style note commitments.
 
-Shroud Pool lives in its own directory (`shroud-pool/`) as an independent workspace. It depends on `janus-core`, `janus-evm`, and `janus-solana` as regular Cargo dependencies.
+Shroud Pool lives in its own directory (`shroud-pool/`) as an independent workspace. It depends on `genshi-core`, `genshi-evm`, and `genshi-solana` as regular Cargo dependencies.
 
-What Shroud Pool defines that Janus does not:
+What Shroud Pool defines that genshi does not:
 - The `Note` structure (amount, blinding, secret, nullifier preimage, owner pubkey, leaf index)
 - Two-layer commitment scheme (Grumpkin Pedersen + Poseidon2 hash)
 - Nullifier derivation (`Poseidon2(nullifier_preimage, secret, leaf_index)`)
@@ -188,18 +188,18 @@ What Shroud Pool defines that Janus does not:
 - Solana Anchor program
 - TypeScript SDK with note management and memo encryption
 
-Shroud Pool validates that Janus is consumable. Once Shroud Pool compiles against Janus with no reverse dependencies and no framework modifications, the split is proven.
+Shroud Pool validates that genshi is consumable. Once Shroud Pool compiles against genshi with no reverse dependencies and no framework modifications, the split is proven.
 
 ### Planned Additional Consumers
 
 The same framework will be consumed by:
 
-- **Cross-VM Private Bridge** — A neutral burn-on-chain-A / mint-on-chain-B bridge. The mechanism is "one ZK proof submitted as calldata to two contracts on two chains; both verify identical bytes; each applies its side of a state transition." This is not a Shroud feature — it is a property of any circuit written against a framework whose verifier runs identically on both VMs. The bridge app will ship as a sibling consumer, not as a Janus feature.
+- **Cross-VM Private Bridge** — A neutral burn-on-chain-A / mint-on-chain-B bridge. The mechanism is "one ZK proof submitted as calldata to two contracts on two chains; both verify identical bytes; each applies its side of a state transition." This is not a Shroud feature — it is a property of any circuit written against a framework whose verifier runs identically on both VMs. The bridge app will ship as a sibling consumer, not as a genshi feature.
 - **Private Payroll** — Prove that a batch of N encrypted salaries sums to a public total, without revealing individual amounts.
 - **Private DEX Venues** — Private AMM state transitions with hidden order sizes.
 - **Institutional Dedicated Channels** — Permissioned payment flows between known counterparties.
 
-Each of these consumes Janus the same way Shroud Pool does: via `cargo add janus-core` and an `impl Circuit` block. The framework does not know any of them exist.
+Each of these consumes genshi the same way Shroud Pool does: via `cargo add genshi-core` and an `impl Circuit` block. The framework does not know any of them exist.
 
 ---
 
@@ -223,19 +223,19 @@ Sequenced roadmap (post-PMF, not v1):
 ```
 shroudZK/                          ← umbrella git repo (will split later)
 │
-├─ janus/                          ← FRAMEWORK workspace (publishable)
+├─ genshi/                          ← FRAMEWORK workspace (publishable)
 │   ├─ Cargo.toml                  independent workspace root
 │   ├─ README.md                   framework docs
 │   ├─ Technical_Spec.md           framework technical spec
 │   ├─ crates/
-│   │   ├─ janus-core/             constraint system, gadgets, prover, verifier
-│   │   ├─ janus-evm/              Solidity emitter + reusable contract libs
-│   │   ├─ janus-solana/           Rust BPF verifier
-│   │   ├─ janus-wasm/             WASM helpers (library crate)
-│   │   └─ janus-cli/              framework tooling binary
+│   │   ├─ genshi-core/             constraint system, gadgets, prover, verifier
+│   │   ├─ genshi-evm/              Solidity emitter + reusable contract libs
+│   │   ├─ genshi-solana/           Rust BPF verifier
+│   │   ├─ genshi-wasm/             WASM helpers (library crate)
+│   │   └─ genshi-cli/              framework tooling binary
 │   └─ benches/                    generic prover/verifier benchmarks
 │
-├─ shroud-pool/                    ← APP workspace (consumer of Janus)
+├─ shroud-pool/                    ← APP workspace (consumer of genshi)
 │   ├─ Cargo.toml                  independent workspace root
 │   ├─ src/                        Note, gadgets, TransferCircuit, WithdrawCircuit
 │   ├─ contracts/                  ShieldedPool.sol
@@ -244,7 +244,7 @@ shroudZK/                          ← umbrella git repo (will split later)
 │   └─ benches/                    transfer/withdraw benchmarks
 │
 ├─ README.md                       this file
-├─ Technical_Req.md                Janus framework technical spec (top-level)
+├─ Technical_Req.md                genshi framework technical spec (top-level)
 └─ implementation_plan.md          phased build plan
 ```
 
@@ -252,9 +252,9 @@ Shroud Pool will eventually move to its own repository. The workspaces are alrea
 
 ---
 
-## Problems Janus Solves (vs Legacy Stacks)
+## Problems genshi Solves (vs Legacy Stacks)
 
-| Problem | Legacy | Janus |
+| Problem | Legacy | genshi |
 |---|---|---|
 | Client proving speed (minutes → seconds) | Circom + Groth16 + snarkjs | Rust-native prover, Keccak transcript, KZG |
 | Per-circuit trusted setup | Groth16 ceremony per circuit change | Universal KZG (Aztec PoT), zero per-circuit ceremonies |
@@ -263,7 +263,7 @@ Shroud Pool will eventually move to its own repository. The workspaces are alrea
 | Tree depth bloat | Binary depth-20 Poseidon, ~5,000 constraints / proof | 4-ary depth-10 Poseidon2, ~1,500 constraints / proof |
 | No server-side prover fallback | Browser-only via snarkjs | Native CLI + WASM, same codebase |
 | Dual-VM incompatibility | Different proof formats per chain | Same proof bytes verify on both |
-| Proof format drift between EVM and Solana | Ad-hoc adapters | Canonical encoding in `janus-core::serialization` |
+| Proof format drift between EVM and Solana | Ad-hoc adapters | Canonical encoding in `genshi-core::serialization` |
 
 ---
 
@@ -275,7 +275,7 @@ Current state as of April 2026:
 - **Verifier exports** (Solidity emitter, Solana BPF verifier): **complete** — 11 tests passing
 - **WASM SDK**: **complete** — 3 tests passing
 - **Keccak transcript, canonical serialization**: **complete**
-- **Crate restructure into Janus + apps split**: **in progress** (this refactor)
+- **Crate restructure into genshi + apps split**: **in progress** (this refactor)
 - **Circuit trait for generic app authoring**: **pending**
 - **Custom Poseidon2 / elliptic / lookup gates** (performance tier 0): **pending**
 - **First app (Shroud Pool) against the new framework API**: **pending**
