@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["zero-knowledge", "cryptography", "plonk", "snark", "zkp"]
+categories = ["cryptography", "no-std"]
 
 [dependencies]
 ark-bn254 = { workspace = true }

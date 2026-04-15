@@ -6,9 +6,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["zero-knowledge", "solana", "cryptography", "plonk", "verifier"]
+categories = ["cryptography", "no-std"]
 
 [dependencies]
-genshi-core = { path = "../genshi-core", default-features = false }
+genshi-core = { path = "../genshi-core", version = "0.1.0", default-features = false }
 ark-bn254 = { workspace = true }
 ark-ff = { workspace = true }
 ark-ec = { workspace = true }

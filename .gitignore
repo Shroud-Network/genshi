@@ -21,3 +21,6 @@ Thumbs.db
 .env.local
 
 Cargo.lock
+
+zkApp
+shroud-pool

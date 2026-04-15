@@ -6,12 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["zero-knowledge", "wasm", "cryptography", "plonk", "zkp"]
+categories = ["wasm", "cryptography"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-genshi-core = { path = "../genshi-core", default-features = false, features = ["serde"] }
+genshi-core = { path = "../genshi-core", version = "0.1.0", default-features = false, features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ark-bn254 = { workspace = true }
