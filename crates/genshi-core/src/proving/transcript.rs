@@ -35,9 +35,7 @@
 //! Solana's `sol_alt_bn128_*` syscalls, so the same bytes that land in
 //! `calldata` / instruction data can be piped straight into Keccak.
 
-use ark_bn254::{Fr, G1Affine};
-use ark_ec::AffineRepr;
-use ark_ff::{BigInteger, PrimeField};
+use genshi_math::{Fr, G1Affine};
 use tiny_keccak::{Hasher, Keccak};
 use alloc::vec::Vec;
 
@@ -57,7 +55,6 @@ impl Transcript {
     /// don't collide, even if they share the same structure.
     pub fn new(domain_separator: &[u8]) -> Self {
         let mut state = Vec::new();
-        // Absorb domain separator with length prefix
         state.extend_from_slice(&(domain_separator.len() as u32).to_le_bytes());
         state.extend_from_slice(domain_separator);
         Self { state }
@@ -65,52 +62,38 @@ impl Transcript {
 
     /// Absorb raw bytes into the transcript.
     pub fn absorb_bytes(&mut self, label: &[u8], data: &[u8]) {
-        // Label prefix for domain separation within the transcript
         self.state.extend_from_slice(&(label.len() as u32).to_le_bytes());
         self.state.extend_from_slice(label);
-        // Data with length prefix
         self.state.extend_from_slice(&(data.len() as u32).to_le_bytes());
         self.state.extend_from_slice(data);
     }
 
-    /// Absorb a scalar field element (BN254 Fr) as 32 bytes big-endian.
-    ///
-    /// Matches the on-chain `uint256` word layout so a Solidity verifier
-    /// can absorb `abi.encodePacked(scalar)` directly.
+    /// Absorb a scalar field element as 32 bytes big-endian.
     pub fn absorb_scalar(&mut self, label: &[u8], scalar: &Fr) {
-        let bytes = scalar.into_bigint().to_bytes_be();
+        let bytes = scalar.to_be_bytes();
         self.absorb_bytes(label, &bytes);
     }
 
-    /// Absorb multiple scalar field elements.
+    /// Absorb multiple scalar field elements, each with an indexed sub-label.
     pub fn absorb_scalars(&mut self, label: &[u8], scalars: &[Fr]) {
         for (i, s) in scalars.iter().enumerate() {
-            // Each scalar gets a unique sub-label
             let mut sub_label = Vec::from(label);
             sub_label.extend_from_slice(&(i as u32).to_le_bytes());
             self.absorb_scalar(&sub_label, s);
         }
     }
 
-    /// Absorb a G1 affine point (commitment) as 64 bytes uncompressed BE.
+    /// Absorb a G1 affine point as 64 bytes uncompressed big-endian.
     ///
-    /// Format: `x_be (32 bytes) || y_be (32 bytes)`. The identity element
-    /// is absorbed as 64 zero bytes. This is the exact layout consumed by
-    /// the `ecAdd` / `ecMul` / `ecPairing` EVM precompiles, so a Solidity
-    /// verifier can forward the same bytes straight from `calldata` into
-    /// Keccak without any transformation.
+    /// Identity encodes as 64 zero bytes; non-identity as `x_be || y_be`.
+    /// See the module-level docs for why this encoding matches the wire
+    /// format of both EVM precompiles and Solana `sol_alt_bn128_*` syscalls.
     pub fn absorb_point(&mut self, label: &[u8], point: &G1Affine) {
-        let mut bytes = [0u8; 64];
-        if !point.is_zero() {
-            let x: ark_bn254::Fq = point.x().unwrap();
-            let y: ark_bn254::Fq = point.y().unwrap();
-            bytes[..32].copy_from_slice(&x.into_bigint().to_bytes_be());
-            bytes[32..].copy_from_slice(&y.into_bigint().to_bytes_be());
-        }
+        let bytes = point.to_uncompressed_bytes();
         self.absorb_bytes(label, &bytes);
     }
 
-    /// Absorb multiple G1 affine points.
+    /// Absorb multiple G1 affine points, each with an indexed sub-label.
     pub fn absorb_points(&mut self, label: &[u8], points: &[G1Affine]) {
         for (i, p) in points.iter().enumerate() {
             let mut sub_label = Vec::from(label);
@@ -121,29 +104,25 @@ impl Transcript {
 
     /// Squeeze a challenge scalar from the transcript.
     ///
-    /// This hashes all accumulated state with the squeeze label via Keccak-256,
+    /// Hashes the accumulated state with the squeeze label via Keccak-256,
     /// then re-seeds the state with the hash output (chaining construction).
     pub fn squeeze_challenge(&mut self, label: &[u8]) -> Fr {
-        // Add the squeeze label to differentiate squeeze calls
         self.state.extend_from_slice(b"squeeze");
         self.state.extend_from_slice(&(label.len() as u32).to_le_bytes());
         self.state.extend_from_slice(label);
 
-        // Hash the entire accumulated state with Keccak-256
         let mut keccak = Keccak::v256();
         keccak.update(&self.state);
         let mut hash = [0u8; 32];
         keccak.finalize(&mut hash);
 
-        // Re-seed the state with the hash output (chaining)
         self.state.clear();
         self.state.extend_from_slice(&hash);
 
-        // Convert 32-byte hash to field element via modular reduction
         Fr::from_be_bytes_mod_order(&hash)
     }
 
-    /// Squeeze multiple challenge scalars.
+    /// Squeeze multiple challenge scalars, each with an indexed sub-label.
     pub fn squeeze_challenges(&mut self, label: &[u8], count: usize) -> Vec<Fr> {
         let mut challenges = Vec::with_capacity(count);
         for i in 0..count {
@@ -168,7 +147,6 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_ff::Zero;
 
     #[test]
     fn test_transcript_deterministic() {
@@ -228,7 +206,6 @@ mod tests {
 
     #[test]
     fn test_absorb_point() {
-        use ark_ec::AffineRepr;
         let g1_gen = G1Affine::generator();
 
         let mut t1 = Transcript::new(b"test");
