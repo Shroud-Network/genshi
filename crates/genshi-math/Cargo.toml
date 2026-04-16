@@ -1,0 +1,41 @@
+[package]
+name = "genshi-math"
+description = "BN254 field, curve, and pairing abstraction with swappable native (arkworks) and BPF (Solana syscalls + hand-rolled Fr) backends"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["zero-knowledge", "bn254", "cryptography", "solana", "no-std"]
+categories = ["cryptography", "no-std"]
+
+[dependencies]
+# Native backend dependencies — optional so the BPF backend can drop them.
+ark-bn254 = { workspace = true, optional = true }
+ark-ec = { workspace = true, optional = true }
+ark-ff = { workspace = true, optional = true }
+ark-serialize = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+
+[features]
+# One of { native, bpf } must be enabled. They are mutually exclusive.
+# `native` is the default for host/wasm builds; `bpf` is what emitted Solana
+# programs enable to route arithmetic through `sol_alt_bn128_*` syscalls.
+default = ["native"]
+native = [
+    "dep:ark-bn254",
+    "dep:ark-ec",
+    "dep:ark-ff",
+    "dep:ark-serialize",
+    "ark-bn254/curve",
+    "ark-bn254/std",
+    "ark-ec/std",
+    "ark-ff/std",
+    "ark-serialize/std",
+]
+bpf = []
