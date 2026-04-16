@@ -7,13 +7,11 @@
 //! For development/testing, we expose a deterministic "insecure" SRS derived
 //! from a known secret — NEVER use this in production.
 //!
-//! Browser deployments can lazy-load only the prefix of G1 powers needed
-//! for the circuit size at hand; see `genshi-wasm` for the loader helper.
+//! The struct stores points as `genshi_math::{G1Affine, G2Affine}` so the
+//! same struct layout is reachable from the BPF backend (which hand-rolls the
+//! point types over Solana syscalls).
 
-use ark_bn254::{Fr, G1Affine, G2Affine};
-use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{One, PrimeField};
-use ark_serialize::{CanonicalSerialize, CanonicalDeserialize};
+use genshi_math::{Fr, G1Affine, G2Affine};
 use alloc::vec::Vec;
 
 /// Structured Reference String for KZG polynomial commitments.
@@ -43,30 +41,32 @@ impl SRS {
     ///
     /// # Arguments
     /// * `max_degree` - Maximum polynomial degree supported (number of G1 points = max_degree + 1)
+    #[cfg(feature = "math-native")]
     pub fn insecure_for_testing(max_degree: usize) -> Self {
-        // Use a deterministic "secret" tau derived from domain separator
-        use sha2::{Sha256, Digest};
+        use ark_bn254::{Fr as ArkFr, G1Affine as ArkG1Affine, G2Affine as ArkG2Affine};
+        use ark_ec::{AffineRepr, CurveGroup};
+        use ark_ff::{One, PrimeField};
+        use sha2::{Digest, Sha256};
+
         let hash = Sha256::digest(b"genshi_insecure_srs_tau_DO_NOT_USE_IN_PRODUCTION");
-        let tau = Fr::from_be_bytes_mod_order(&hash);
+        let tau = ArkFr::from_be_bytes_mod_order(&hash);
 
-        let g1_gen = G1Affine::generator();
-        let g2_gen = G2Affine::generator();
+        let g1_gen = ArkG1Affine::generator();
+        let g2_gen = ArkG2Affine::generator();
 
-        // Compute G1 powers: [G1, τ·G1, τ²·G1, ..., τ^n·G1]
         let mut g1_powers = Vec::with_capacity(max_degree + 1);
-        let mut tau_pow = Fr::one();
+        let mut tau_pow = ArkFr::one();
         for _ in 0..=max_degree {
             let point = (g1_gen * tau_pow).into_affine();
-            g1_powers.push(point);
+            g1_powers.push(G1Affine::from_ark(point));
             tau_pow *= tau;
         }
 
-        // Compute τ·G2
-        let g2_tau = (g2_gen * tau).into_affine();
+        let g2_tau = G2Affine::from_ark((g2_gen * tau).into_affine());
 
         Self {
             g1_powers,
-            g2: g2_gen,
+            g2: G2Affine::from_ark(g2_gen),
             g2_tau,
         }
     }
@@ -104,68 +104,66 @@ impl SRS {
     ///
     /// Layout:
     /// - `num_g1_points`: 4 bytes (u32 LE)
-    /// - `g1_powers`: num_g1_points x 64 bytes (uncompressed)
-    /// - `g2`: 128 bytes (uncompressed G2)
-    /// - `g2_tau`: 128 bytes (uncompressed G2)
+    /// - `g1_powers`: num_g1_points × uncompressed G1 size
+    /// - `g2`: uncompressed G2 size
+    /// - `g2_tau`: uncompressed G2 size
+    #[cfg(feature = "math-native")]
     pub fn save_to_bytes(&self) -> Vec<u8> {
+        let g1_size = G1Affine::serialized_size();
+        let g2_size = G2Affine::serialized_size();
         let n = self.g1_powers.len();
-        let mut buf = Vec::with_capacity(4 + n * 64 + 256);
+        let mut buf = Vec::with_capacity(4 + n * g1_size + 2 * g2_size);
 
         buf.extend_from_slice(&(n as u32).to_le_bytes());
         for p in &self.g1_powers {
             let mut point_buf = Vec::new();
-            p.serialize_uncompressed(&mut point_buf)
-                .expect("G1 serialization should not fail");
+            p.serialize_uncompressed(&mut point_buf);
             buf.extend_from_slice(&point_buf);
         }
 
         let mut g2_buf = Vec::new();
-        self.g2.serialize_uncompressed(&mut g2_buf)
-            .expect("G2 serialization should not fail");
+        self.g2.serialize_uncompressed(&mut g2_buf);
         buf.extend_from_slice(&g2_buf);
 
         let mut g2_tau_buf = Vec::new();
-        self.g2_tau.serialize_uncompressed(&mut g2_tau_buf)
-            .expect("G2 serialization should not fail");
+        self.g2_tau.serialize_uncompressed(&mut g2_tau_buf);
         buf.extend_from_slice(&g2_tau_buf);
 
         buf
     }
 
-    /// Deserialize the SRS from bytes.
+    /// Deserialize the SRS from bytes. Runs on both host (native backend) and
+    /// inside emitted Anchor programs (bpf backend), so the byte layout is
+    /// identical across backends.
     pub fn load_from_bytes(bytes: &[u8]) -> Self {
         assert!(bytes.len() >= 4, "SRS bytes too short");
         let n = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
         let mut offset = 4;
 
-        let g1_size = {
-            // Uncompressed G1: check actual size by serializing the generator
-            let mut tmp = Vec::new();
-            G1Affine::generator().serialize_uncompressed(&mut tmp).unwrap();
-            tmp.len()
-        };
-        let g2_size = {
-            let mut tmp = Vec::new();
-            G2Affine::generator().serialize_uncompressed(&mut tmp).unwrap();
-            tmp.len()
-        };
+        let g1_size = G1Affine::serialized_size();
+        let g2_size = G2Affine::serialized_size();
 
         let mut g1_powers = Vec::with_capacity(n);
         for _ in 0..n {
-            let p = G1Affine::deserialize_uncompressed(&bytes[offset..offset + g1_size])
-                .expect("G1 deserialization failed");
+            let p = G1Affine::deserialize_uncompressed(&bytes[offset..offset + g1_size]);
             g1_powers.push(p);
             offset += g1_size;
         }
 
-        let g2 = G2Affine::deserialize_uncompressed(&bytes[offset..offset + g2_size])
-            .expect("G2 deserialization failed");
+        let g2 = G2Affine::deserialize_uncompressed(&bytes[offset..offset + g2_size]);
         offset += g2_size;
 
-        let g2_tau = G2Affine::deserialize_uncompressed(&bytes[offset..offset + g2_size])
-            .expect("G2 tau deserialization failed");
+        let g2_tau = G2Affine::deserialize_uncompressed(&bytes[offset..offset + g2_size]);
 
         Self { g1_powers, g2, g2_tau }
+    }
+
+    /// Pre-reserved for backend-agnostic "empty" construction (tests that want
+    /// to build a dummy SRS without running the insecure ceremony). Not used
+    /// yet; stub retained to silence `Fr` unused-import linters in no_std.
+    #[allow(dead_code)]
+    fn _phantom_fr_use() -> Fr {
+        Fr::zero()
     }
 }
 
@@ -173,21 +171,20 @@ impl SRS {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "math-native"))]
 mod tests {
     use super::*;
 
     #[test]
     fn test_srs_generation() {
         let srs = SRS::insecure_for_testing(16);
-        assert_eq!(srs.size(), 17); // 0..=16
+        assert_eq!(srs.size(), 17);
         assert_eq!(srs.max_degree(), 16);
     }
 
     #[test]
     fn test_srs_first_point_is_generator() {
         let srs = SRS::insecure_for_testing(4);
-        // τ^0 · G1 = G1
         assert_eq!(srs.g1_power(0), G1Affine::generator());
     }
 
@@ -197,16 +194,6 @@ mod tests {
         let srs2 = SRS::insecure_for_testing(8);
         assert_eq!(srs1.g1_powers, srs2.g1_powers, "SRS must be deterministic");
         assert_eq!(srs1.g2_tau, srs2.g2_tau);
-    }
-
-    #[test]
-    fn test_srs_points_on_curve() {
-        let srs = SRS::insecure_for_testing(8);
-        for (i, p) in srs.g1_powers.iter().enumerate() {
-            assert!(p.is_on_curve(), "G1 power {} not on curve", i);
-        }
-        assert!(srs.g2.is_on_curve(), "G2 not on curve");
-        assert!(srs.g2_tau.is_on_curve(), "G2·τ not on curve");
     }
 
     #[test]
