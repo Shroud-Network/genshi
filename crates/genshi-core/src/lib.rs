@@ -29,14 +29,19 @@
 extern crate alloc;
 
 pub mod crypto;
+#[cfg(feature = "prover")]
 pub mod arithmetization;
+#[cfg(feature = "prover")]
 pub mod gadgets;
 pub mod proving;
 pub mod circuit;
 pub mod note;
+#[cfg(feature = "prover")]
 pub mod witness;
 
 pub use circuit::Circuit;
+#[cfg(feature = "prover")]
+pub use circuit::ProvableCircuit;
 pub use note::{grumpkin_scalar_to_fr, Note};
 
 // Re-export the arkworks crates genshi-core depends on, so downstream
@@ -49,9 +54,10 @@ pub use ark_ec;
 pub use ark_ff;
 pub use ark_grumpkin;
 
-/// Build a proof for a [`Circuit`] using the supplied SRS.
+/// Build a proof for a [`ProvableCircuit`] using the supplied SRS.
 ///
 /// Convenience re-export of [`proving::api::prove`].
+#[cfg(feature = "prover")]
 pub use proving::api::prove;
 
 /// Verify a proof for a [`Circuit`] against its verification key.
@@ -59,7 +65,8 @@ pub use proving::api::prove;
 /// Convenience re-export of [`proving::api::verify`].
 pub use proving::api::verify;
 
-/// Extract the verification key for a [`Circuit`] without proving.
+/// Extract the verification key for a [`ProvableCircuit`] without proving.
 ///
 /// Convenience re-export of [`proving::api::extract_vk`].
+#[cfg(feature = "prover")]
 pub use proving::api::extract_vk;
