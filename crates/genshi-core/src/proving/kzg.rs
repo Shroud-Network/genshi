@@ -20,6 +20,15 @@ use alloc::vec::Vec;
 
 use super::srs::SRS;
 
+/// Unwrap the SRS's G1 powers (stored as backend-agnostic
+/// `genshi_math::G1Affine`) into the arkworks representation that the
+/// prover-side MSM expects. Allocates a scratch `Vec`, which is acceptable
+/// because MSM is called at most a handful of times per proof and dominated
+/// by the MSM work itself.
+fn srs_g1_ark(srs: &SRS, len: usize) -> Vec<G1Affine> {
+    srs.g1_powers[..len].iter().map(|p| p.to_ark()).collect()
+}
+
 /// Result of opening a polynomial commitment at a point.
 #[derive(Clone, Debug)]
 pub struct KZGOpening {
@@ -49,7 +58,8 @@ pub fn commit(coeffs: &[Fr], srs: &SRS) -> G1Affine {
         coeffs.len() - 1,
         srs.max_degree()
     );
-    G1Projective::msm(&srs.g1_powers[..coeffs.len()], coeffs)
+    let bases = srs_g1_ark(srs, coeffs.len());
+    G1Projective::msm(&bases, coeffs)
         .expect("MSM should not fail")
         .into_affine()
 }
@@ -97,14 +107,18 @@ pub fn verify(
     let lhs_g1 = (commitment.into_group() - v_g1).into_affine();
 
     // RHS G2 element: τ·G₂ - z·G₂
-    let z_g2 = srs.g2 * z;
-    let rhs_g2 = (srs.g2_tau.into_group() - z_g2).into_affine();
+    // SRS stores G2 points as `genshi_math::G2Affine`; unwrap to ark for the
+    // prover-side pairing check (this path never runs on BPF).
+    let g2_ark = srs.g2.to_ark();
+    let g2_tau_ark = srs.g2_tau.to_ark();
+    let z_g2 = g2_ark * z;
+    let rhs_g2 = (g2_tau_ark.into_group() - z_g2).into_affine();
 
     // Multi-pairing check: e(lhs, G₂) · e(-π, rhs_g2) == 1
     let neg_witness = (-witness.into_group()).into_affine();
     Bn254::multi_pairing(
         [lhs_g1, neg_witness],
-        [srs.g2, rhs_g2],
+        [g2_ark, rhs_g2],
     )
     .is_zero()
 }
