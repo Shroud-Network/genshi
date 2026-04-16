@@ -5,9 +5,13 @@
 //! [`prover::prove`] directly. Instead, they implement [`Circuit`] for their
 //! statement and call [`prove`] / [`verify`] / [`extract_vk`] from this module.
 //!
+//! Verification only needs [`Circuit`]; proving and VK extraction additionally
+//! need [`ProvableCircuit`] — on Solana BPF (where the prover is gated off) the
+//! latter trait doesn't exist, so only [`verify`] is reachable.
+//!
 //! ```
 //! use ark_bn254::Fr;
-//! use genshi_core::{Circuit, proving::api};
+//! use genshi_core::{Circuit, ProvableCircuit, proving::api};
 //! use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 //! use genshi_core::proving::srs::SRS;
 //!
@@ -15,10 +19,13 @@
 //! struct AddWitness { a: Fr, b: Fr }
 //!
 //! impl Circuit for AddCircuit {
-//!     type Witness = AddWitness;
 //!     type PublicInputs = [Fr; 1];
 //!     const ID: &'static str = "doctest.add";
 //!     fn num_public_inputs() -> usize { 1 }
+//! }
+//!
+//! impl ProvableCircuit for AddCircuit {
+//!     type Witness = AddWitness;
 //!     fn synthesize(b: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
 //!         let a = b.add_variable(w.a);
 //!         let bb = b.add_variable(w.b);
@@ -39,11 +46,19 @@
 //! assert!(api::verify::<AddCircuit>(&proof, &vk, &public_inputs, &srs));
 //! ```
 
-use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 use crate::circuit::Circuit;
-use crate::proving::prover::{self, Proof, VerificationKey};
 use crate::proving::srs::SRS;
+use crate::proving::types::{Proof, VerificationKey};
 use crate::proving::verifier;
+use alloc::vec::Vec;
+use genshi_math::Fr as GFr;
+
+#[cfg(feature = "prover")]
+use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+#[cfg(feature = "prover")]
+use crate::circuit::ProvableCircuit;
+#[cfg(feature = "prover")]
+use crate::proving::prover;
 
 /// Build the constraint system for `C`, run the prover, and return both the
 /// proof and the public inputs the circuit committed to.
@@ -56,7 +71,8 @@ use crate::proving::verifier;
 /// Panics if `C::synthesize` produces an unsatisfied circuit. Catching this in
 /// development is the whole point of [`UltraCircuitBuilder::check_circuit_correctness`],
 /// which the prover invokes via `debug_assert!`.
-pub fn prove<C: Circuit>(
+#[cfg(feature = "prover")]
+pub fn prove<C: ProvableCircuit>(
     witness: &C::Witness,
     srs: &SRS,
 ) -> (Proof, VerificationKey, C::PublicInputs) {
@@ -77,22 +93,27 @@ pub fn verify<C: Circuit>(
     public_inputs: &C::PublicInputs,
     srs: &SRS,
 ) -> bool {
-    verifier::verify(proof, vk, public_inputs.as_ref(), srs)
+    // `Circuit::PublicInputs` is still defined in terms of `ark_bn254::Fr` so
+    // downstream circuit impls don't need to know about the `genshi_math`
+    // abstraction; wrap each scalar into `genshi_math::Fr` at this boundary.
+    let pi: Vec<GFr> = public_inputs.as_ref().iter().copied().map(GFr::from_ark).collect();
+    verifier::verify(proof, vk, &pi, srs)
 }
 
 /// Compute the verification key for a circuit shape without producing a proof.
 ///
-/// Internally synthesizes `C` against [`Circuit::dummy_witness`] — the
+/// Internally synthesizes `C` against [`ProvableCircuit::dummy_witness`] — the
 /// resulting circuit must therefore have the same gate count and public input
 /// shape as a "real" run, which is the contract on `dummy_witness`.
-pub fn extract_vk<C: Circuit>(srs: &SRS) -> VerificationKey {
+#[cfg(feature = "prover")]
+pub fn extract_vk<C: ProvableCircuit>(srs: &SRS) -> VerificationKey {
     let mut builder = UltraCircuitBuilder::new();
     let dummy = C::dummy_witness();
     let _ = C::synthesize(&mut builder, &dummy);
     prover::extract_vk_from_builder(&builder, srs)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prover"))]
 mod tests {
     use super::*;
     use ark_bn254::Fr;
@@ -104,13 +125,16 @@ mod tests {
     }
 
     impl Circuit for AddCircuit {
-        type Witness = AddWitness;
         type PublicInputs = [Fr; 1];
         const ID: &'static str = "genshi-core.test.add";
 
         fn num_public_inputs() -> usize {
             1
         }
+    }
+
+    impl ProvableCircuit for AddCircuit {
+        type Witness = AddWitness;
 
         fn synthesize(
             builder: &mut UltraCircuitBuilder,
