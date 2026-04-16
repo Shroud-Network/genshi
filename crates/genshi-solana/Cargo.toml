@@ -13,7 +13,8 @@ keywords = ["zero-knowledge", "solana", "cryptography", "plonk", "verifier"]
 categories = ["cryptography", "no-std"]
 
 [dependencies]
-genshi-core = { path = "../genshi-core", version = "0.1.0", default-features = false }
+genshi-core = { path = "../genshi-core", version = "0.2.0", default-features = false }
+genshi-math = { workspace = true, default-features = false }
 ark-bn254 = { workspace = true }
 ark-ff = { workspace = true }
 ark-ec = { workspace = true }
@@ -26,8 +27,12 @@ ark-serialize = { workspace = true }
 solana-program = ">=1.18, <3"
 
 [features]
-default = ["std"]
+default = ["std", "math-native"]
 std = ["genshi-core/std"]
+# Pick the genshi-math backend. On host/WASM builds keep `math-native` (default).
+# BPF consumers turn default-features off and enable `math-bpf` instead.
+math-native = ["genshi-math/native"]
+math-bpf = ["genshi-math/bpf"]
 
 # `target_os = "solana"` is only defined when rustc is driven by the Solana
 # BPF backend. Tell host rustc that the cfg is recognized so the
