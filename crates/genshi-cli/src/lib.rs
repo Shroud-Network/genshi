@@ -59,7 +59,7 @@ use genshi_core::proving::verifier;
 // Publicly re-export the Circuit trait and the inventory crate so that
 // consumer crates can say `genshi_cli::Circuit` and the `register!` macro
 // can resolve `$crate::inventory::submit!` regardless of where it's invoked.
-pub use genshi_core::circuit::Circuit;
+pub use genshi_core::circuit::{Circuit, ProvableCircuit};
 #[doc(hidden)]
 pub use inventory;
 
@@ -75,6 +75,20 @@ pub mod __private {
     pub use genshi_core::proving::srs::SRS;
     pub use genshi_evm::solidity_emitter::{EmitterOptions, generate_verifier_sol_with};
     pub use serde_json;
+
+    /// Encode ark-typed public inputs (as returned by `Circuit::PublicInputs`)
+    /// via the genshi-math-typed serializer. Bridges the trait surface
+    /// (`ark_bn254::Fr`) with the verifier surface (`genshi_math::Fr`).
+    pub fn pi_bytes_from_ark(inputs: &[ark_bn254::Fr]) -> alloc::vec::Vec<u8> {
+        let g: alloc::vec::Vec<genshi_math::Fr> = inputs
+            .iter()
+            .copied()
+            .map(genshi_math::Fr::from_ark)
+            .collect();
+        public_inputs_to_bytes_le(&g)
+    }
+
+    extern crate alloc;
 }
 
 // ============================================================================
@@ -126,7 +140,7 @@ inventory::collect!(CircuitEntry);
 /// Place this macro call next to each `impl Circuit for MyCircuit` block:
 ///
 /// ```
-/// use genshi_cli::Circuit;
+/// use genshi_cli::{Circuit, ProvableCircuit};
 /// use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 /// use ark_bn254::Fr;
 /// use serde::{Serialize, Deserialize};
@@ -137,10 +151,13 @@ inventory::collect!(CircuitEntry);
 /// pub struct MyWitness { pub x: u64 }
 ///
 /// impl Circuit for MyCircuit {
-///     type Witness = MyWitness;
 ///     type PublicInputs = [Fr; 1];
 ///     const ID: &'static str = "example.my-circuit";
 ///     fn num_public_inputs() -> usize { 1 }
+/// }
+///
+/// impl ProvableCircuit for MyCircuit {
+///     type Witness = MyWitness;
 ///     fn synthesize(builder: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
 ///         let v = builder.add_variable(Fr::from(w.x));
 ///         builder.set_public(v);
@@ -182,17 +199,17 @@ macro_rules! register {
                     $crate::__private::generate_verifier_sol_with(&vk, srs, opts)
                 },
                 prove_from_json: |json: &str, srs: &$crate::__private::SRS| {
-                    let witness: <$ty as $crate::Circuit>::Witness =
+                    let witness: <$ty as $crate::ProvableCircuit>::Witness =
                         $crate::__private::serde_json::from_str(json)
                             .map_err(|e| format!("witness deserialization failed: {e}"))?;
                     let (proof, vk, pi) = $crate::__private::api::prove::<$ty>(&witness, srs);
                     let proof_bytes = $crate::__private::proof_to_bytes(&proof);
                     let vk_bytes = $crate::__private::vk_to_bytes(&vk);
-                    let pi_bytes = $crate::__private::public_inputs_to_bytes_le(pi.as_ref());
+                    let pi_bytes = $crate::__private::pi_bytes_from_ark(pi.as_ref());
                     Ok((proof_bytes, vk_bytes, pi_bytes))
                 },
                 witness_json: || {
-                    let w = <$ty as $crate::Circuit>::dummy_witness();
+                    let w = <$ty as $crate::ProvableCircuit>::dummy_witness();
                     $crate::__private::serde_json::to_string_pretty(&w)
                         .map_err(|e| format!("witness serialization failed: {e}"))
                 },
@@ -224,20 +241,20 @@ macro_rules! register {
                 },
                 prove_from_json: |json: &str, srs: &$crate::__private::SRS| {
                     let convert: fn(&str) -> Result<
-                        <$ty as $crate::Circuit>::Witness,
+                        <$ty as $crate::ProvableCircuit>::Witness,
                         String,
                     > = $witness_from_json;
                     let witness = convert(json)?;
                     let (proof, vk, pi) = $crate::__private::api::prove::<$ty>(&witness, srs);
                     let proof_bytes = $crate::__private::proof_to_bytes(&proof);
                     let vk_bytes = $crate::__private::vk_to_bytes(&vk);
-                    let pi_bytes = $crate::__private::public_inputs_to_bytes_le(pi.as_ref());
+                    let pi_bytes = $crate::__private::pi_bytes_from_ark(pi.as_ref());
                     Ok((proof_bytes, vk_bytes, pi_bytes))
                 },
                 witness_json: || {
-                    let w = <$ty as $crate::Circuit>::dummy_witness();
+                    let w = <$ty as $crate::ProvableCircuit>::dummy_witness();
                     let convert: fn(
-                        &<$ty as $crate::Circuit>::Witness,
+                        &<$ty as $crate::ProvableCircuit>::Witness,
                     ) -> String = $witness_to_json;
                     Ok(convert(&w))
                 },
@@ -266,14 +283,14 @@ macro_rules! register {
                 },
                 prove_from_json: |json: &str, srs: &$crate::__private::SRS| {
                     let convert: fn(&str) -> Result<
-                        <$ty as $crate::Circuit>::Witness,
+                        <$ty as $crate::ProvableCircuit>::Witness,
                         String,
                     > = $witness_from_json;
                     let witness = convert(json)?;
                     let (proof, vk, pi) = $crate::__private::api::prove::<$ty>(&witness, srs);
                     let proof_bytes = $crate::__private::proof_to_bytes(&proof);
                     let vk_bytes = $crate::__private::vk_to_bytes(&vk);
-                    let pi_bytes = $crate::__private::public_inputs_to_bytes_le(pi.as_ref());
+                    let pi_bytes = $crate::__private::pi_bytes_from_ark(pi.as_ref());
                     Ok((proof_bytes, vk_bytes, pi_bytes))
                 },
                 witness_json: || {
@@ -1225,9 +1242,9 @@ fn cmd_verify(
         eprintln!("public inputs file must be a multiple of 32 bytes");
         return ExitCode::FAILURE;
     }
-    let mut public_inputs = Vec::with_capacity(pi_bytes.len() / 32);
+    let mut public_inputs: Vec<genshi_math::Fr> = Vec::with_capacity(pi_bytes.len() / 32);
     for chunk in pi_bytes.chunks_exact(32) {
-        public_inputs.push(Fr::from_le_bytes_mod_order(chunk));
+        public_inputs.push(genshi_math::Fr::from_ark(Fr::from_le_bytes_mod_order(chunk)));
     }
 
     if verifier::verify(&proof, &vk, &public_inputs, &srs) {
@@ -1543,7 +1560,7 @@ const SCAFFOLD_CIRCUITS_ADD_RS: &str = r#"//! Example "a + b = c" circuit.
 
 use ark_bn254::Fr;
 use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
-use genshi_core::circuit::Circuit;
+use genshi_core::circuit::{Circuit, ProvableCircuit};
 
 pub struct AddCircuit;
 
@@ -1555,13 +1572,16 @@ pub struct AddWitness {
 }
 
 impl Circuit for AddCircuit {
-    type Witness = AddWitness;
     type PublicInputs = [Fr; 1];
     const ID: &'static str = "example.add";
 
     fn num_public_inputs() -> usize {
         1
     }
+}
+
+impl ProvableCircuit for AddCircuit {
+    type Witness = AddWitness;
 
     fn synthesize(
         builder: &mut UltraCircuitBuilder,
@@ -1596,8 +1616,8 @@ genshi_cli::register!(AddCircuit, "add");
 ///
 /// Points in .ptau files are little-endian uncompressed BN254 coordinates.
 fn parse_ptau(data: &[u8], max_degree: usize) -> Result<SRS, String> {
-    use ark_bn254::{G1Affine, G2Affine, Fq, Fq2};
-    use ark_ec::AffineRepr;
+    use ark_bn254::{G1Affine as ArkG1Affine, G2Affine as ArkG2Affine, Fq, Fq2};
+    use genshi_math::{G1Affine, G2Affine};
 
     // --- Header ---
     // First 4 bytes: magic "zks\n" or similar; varies by snarkjs version.
@@ -1659,11 +1679,11 @@ fn parse_ptau(data: &[u8], max_degree: usize) -> Result<SRS, String> {
         let base = g1_off + i * g1_point_size;
         let x = Fq::from_le_bytes_mod_order(&data[base..base + 32]);
         let y = Fq::from_le_bytes_mod_order(&data[base + 32..base + 64]);
-        let point = G1Affine::new_unchecked(x, y);
+        let point = ArkG1Affine::new_unchecked(x, y);
         if !point.is_on_curve() {
             return Err(format!("G1 point {i} not on curve"));
         }
-        g1_powers.push(point);
+        g1_powers.push(G1Affine::from_ark(point));
     }
 
     // --- Parse G2 points ---
@@ -1683,11 +1703,11 @@ fn parse_ptau(data: &[u8], max_degree: usize) -> Result<SRS, String> {
         let y_c1 = Fq::from_le_bytes_mod_order(&data[base + 96..base + 128]);
         let x = Fq2::new(x_c0, x_c1);
         let y = Fq2::new(y_c0, y_c1);
-        let point = G2Affine::new_unchecked(x, y);
+        let point = ArkG2Affine::new_unchecked(x, y);
         if !point.is_on_curve() {
             return Err(format!("G2 point {idx} not on curve"));
         }
-        Ok(point)
+        Ok(G2Affine::from_ark(point))
     };
 
     let g2 = read_g2(0)?;     // τ^0 · G2 = G2 generator
