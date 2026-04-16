@@ -6,14 +6,19 @@
 //! (used for tests, CLI, and host-side verification), it falls back to the
 //! arkworks pairing engine.
 //!
+//! Types come from `genshi-math` so the same surface compiles under the BPF
+//! backend (syscall-based) without pulling arkworks into BPF.
+//!
 //! Solana BN254 syscalls (available since v1.16):
 //! - `sol_alt_bn128_addition`:       ~1K CU
 //! - `sol_alt_bn128_multiplication`: ~14K CU
 //! - `sol_alt_bn128_pairing`:        ~280K CU per 2-pair check
 
-use ark_bn254::{Bn254, Fr, G1Affine, G2Affine};
-use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
-use ark_ff::{BigInteger, PrimeField, Zero};
+use ark_ec::AffineRepr;
+#[cfg(test)]
+use ark_ec::CurveGroup;
+use ark_ff::{BigInteger, PrimeField};
+use genshi_math::{pairing_check, Fr, G1Affine, G2Affine};
 
 /// Length of a serialized pairing element (G1 || G2) on Solana, in bytes.
 const PAIRING_ELEMENT_LEN: usize = 192;
@@ -24,15 +29,7 @@ const PAIRING_ELEMENT_LEN: usize = 192;
 /// Solana's `sol_alt_bn128_pairing` syscall expects big-endian encoding,
 /// matching the EIP-197 wire format.
 pub fn g1_to_be_bytes(point: &G1Affine) -> [u8; 64] {
-    let mut out = [0u8; 64];
-    if point.is_zero() {
-        return out;
-    }
-    let x: ark_bn254::Fq = point.x().unwrap();
-    let y: ark_bn254::Fq = point.y().unwrap();
-    out[..32].copy_from_slice(&x.into_bigint().to_bytes_be());
-    out[32..].copy_from_slice(&y.into_bigint().to_bytes_be());
-    out
+    point.to_uncompressed_bytes()
 }
 
 /// Encode a G2Affine point as 128 bytes for Solana syscall input.
@@ -41,11 +38,12 @@ pub fn g1_to_be_bytes(point: &G1Affine) -> [u8; 64] {
 /// (Fp2 encoded as c1 || c0, matching EIP-197 / Solana convention.)
 pub fn g2_to_be_bytes(point: &G2Affine) -> [u8; 128] {
     let mut out = [0u8; 128];
-    if point.is_zero() {
+    let ark = point.to_ark();
+    if ark.is_zero() {
         return out;
     }
-    let x = point.x().unwrap();
-    let y = point.y().unwrap();
+    let x = ark.x().unwrap();
+    let y = ark.y().unwrap();
     out[0..32].copy_from_slice(&x.c1.into_bigint().to_bytes_be());
     out[32..64].copy_from_slice(&x.c0.into_bigint().to_bytes_be());
     out[64..96].copy_from_slice(&y.c1.into_bigint().to_bytes_be());
@@ -64,41 +62,20 @@ pub fn pairing_pair_to_be_bytes(g1: &G1Affine, g2: &G2Affine) -> [u8; PAIRING_EL
 
 /// Perform a 2-pair pairing check: `e(A1, B1) * e(A2, B2) == 1`.
 ///
-/// On Solana BPF (`target_os = "solana"`), this calls `sol_alt_bn128_pairing`
-/// via the `solana-program` crate, costing ~280K CU. On native, it falls
-/// back to arkworks `Bn254::multi_pairing`, used by the host-side tests and
-/// any off-chain verification path (CLI, server).
+/// Delegates to `genshi_math::pairing_check`, which routes through arkworks on
+/// native/WASM and `sol_alt_bn128_pairing` on the BPF backend.
 pub fn pairing_check_2(
     a1: &G1Affine,
     b1: &G2Affine,
     a2: &G1Affine,
     b2: &G2Affine,
 ) -> bool {
-    #[cfg(target_os = "solana")]
-    {
-        // 384-byte input = two 192-byte (G1 || G2) pairs in big-endian.
-        let mut input = [0u8; 2 * PAIRING_ELEMENT_LEN];
-        input[..PAIRING_ELEMENT_LEN].copy_from_slice(&pairing_pair_to_be_bytes(a1, b1));
-        input[PAIRING_ELEMENT_LEN..].copy_from_slice(&pairing_pair_to_be_bytes(a2, b2));
-
-        // `alt_bn128_pairing` returns a 32-byte result where the final byte
-        // is `1` if the product of pairings equals the identity element in
-        // GT (i.e., the pairing check passes) and `0` otherwise.
-        match solana_program::alt_bn128::prelude::alt_bn128_pairing(&input) {
-            Ok(result) => result.len() == 32 && result[31] == 1,
-            Err(_) => false,
-        }
-    }
-    #[cfg(not(target_os = "solana"))]
-    {
-        // Native / host-side path: use the arkworks pairing engine.
-        Bn254::multi_pairing([*a1, *a2], [*b1, *b2]).is_zero()
-    }
+    pairing_check(*a1, *b1, *a2, *b2)
 }
 
 /// Compute G2 point: `tau*G2 - scalar*G2`. Used for the KZG pairing RHS.
 pub fn compute_g2_rhs(g2: &G2Affine, g2_tau: &G2Affine, scalar: &Fr) -> G2Affine {
-    let scaled = g2.into_group() * scalar;
+    let scaled = *g2 * *scalar;
     (g2_tau.into_group() - scaled).into_affine()
 }
 
@@ -141,7 +118,7 @@ mod tests {
     fn test_pairing_check_identity() {
         let g1 = G1Affine::generator();
         let g2 = G2Affine::generator();
-        let neg_g1 = (-g1.into_group()).into_affine();
+        let neg_g1 = G1Affine::from_ark((-g1.to_ark().into_group()).into_affine());
         // e(G1, G2) * e(-G1, G2) = 1
         assert!(pairing_check_2(&g1, &g2, &neg_g1, &g2));
     }
