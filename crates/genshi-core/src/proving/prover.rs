@@ -13,6 +13,11 @@
 //!
 //! Cross-verify against TaceoLabs/Barretenberg reference (Risk R1 mitigation).
 
+// The prover's internal arithmetic runs in ark types (arkworks' FFT, field
+// inverse, and MSM routines are arkworks-native). We only convert to the
+// backend-agnostic `genshi_math::{Fr, G1Affine}` at the `Proof` / `VK`
+// boundary — the verifier reads those types and must resolve them without
+// arkworks in the BPF build.
 use ark_bn254::{Fr, G1Affine};
 use ark_ff::{FftField, Field, One, Zero};
 use alloc::vec;
@@ -22,6 +27,32 @@ use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 use super::kzg;
 use super::srs::SRS;
 use super::transcript::Transcript;
+use genshi_math::{Fr as GFr, G1Affine as GG1Affine};
+
+// Semver shim: the 0.1.x release exposed these types at
+// `genshi_core::proving::prover::{Proof, VerificationKey}`. They now live in
+// `super::types` but the path stays valid via `pub use`.
+pub use super::types::{Proof, VerificationKey};
+
+/// Convert an ark scalar into the backend-agnostic `genshi_math::Fr`.
+#[inline]
+fn f(v: Fr) -> GFr {
+    GFr::from_ark(v)
+}
+
+/// Convert an ark G1 affine point into the backend-agnostic `genshi_math::G1Affine`.
+#[inline]
+fn p(v: G1Affine) -> GG1Affine {
+    GG1Affine::from_ark(v)
+}
+
+/// Unwrap a `genshi_math::Fr` back to the arkworks `Fr` the internal prover
+/// helpers (FFT, MSM, evaluation) still operate on. Only used where a
+/// transcript-produced challenge needs to flow back into ark-land.
+#[inline]
+fn af(v: GFr) -> Fr {
+    v.to_ark()
+}
 
 // ============================================================================
 // Coset generators for permutation argument
@@ -42,49 +73,9 @@ fn coset_generators() -> [Fr; 4] {
 // ============================================================================
 // Data Structures
 // ============================================================================
-
-/// PLONK proof for UltraHonk.
-#[derive(Clone, Debug)]
-pub struct Proof {
-    // Round 1: Wire commitments
-    pub w_comms: [G1Affine; 4],
-
-    // Round 2: Permutation grand product
-    pub z_comm: G1Affine,
-
-    // Round 3: Quotient polynomial parts
-    pub t_comms: Vec<G1Affine>,
-
-    // Round 4: Evaluations at ζ
-    pub w_evals: [Fr; 4],
-    pub sigma_evals: [Fr; 4], // σ₁(ζ), σ₂(ζ), σ₃(ζ), σ₄(ζ)
-    pub z_eval: Fr,           // z(ζ)
-    pub z_omega_eval: Fr,     // z(ζω)
-    pub selector_evals: [Fr; 7], // q_m, q_1, q_2, q_3, q_4, q_c, q_arith at ζ
-    pub t_eval: Fr,           // t(ζ) = Σ t_i(ζ) · ζ^(i·n)
-
-    // Round 5: Opening witnesses
-    pub w_zeta: G1Affine,       // batch opening at ζ
-    pub w_zeta_omega: G1Affine, // opening of z at ζω
-}
-
-/// Verification key: commitments to preprocessed polynomials.
-#[derive(Clone, Debug)]
-pub struct VerificationKey {
-    pub q_m_comm: G1Affine,
-    pub q_1_comm: G1Affine,
-    pub q_2_comm: G1Affine,
-    pub q_3_comm: G1Affine,
-    pub q_4_comm: G1Affine,
-    pub q_c_comm: G1Affine,
-    pub q_arith_comm: G1Affine,
-    pub sigma_comms: [G1Affine; 4],
-
-    pub domain_size: usize,
-    pub num_public_inputs: usize,
-    pub omega: Fr,
-    pub k: [Fr; 4],
-}
+// `Proof` and `VerificationKey` live in `super::types` (shared with the verifier
+// so Solana BPF builds can gate out the prover). They are re-exported at the
+// top of this file to preserve the 0.1.x import path.
 
 /// Computed during preprocessing: full polynomial data for prover.
 struct ProvingData {
@@ -295,25 +286,28 @@ fn preprocess(
         ifft(&sigmas_evals[3], omega, n),
     ];
 
-    // Commit to preprocessed polynomials
+    // Commit to preprocessed polynomials. `kzg::commit` returns arkworks G1
+    // affine points — wrap them into the backend-agnostic `genshi_math::G1Affine`
+    // at the VK boundary so the verifier path (which compiles with the
+    // `math-bpf` backend on Solana) can read this VK without arkworks.
     let vk = VerificationKey {
-        q_m_comm: kzg::commit(&q_m, srs),
-        q_1_comm: kzg::commit(&q_1, srs),
-        q_2_comm: kzg::commit(&q_2, srs),
-        q_3_comm: kzg::commit(&q_3, srs),
-        q_4_comm: kzg::commit(&q_4, srs),
-        q_c_comm: kzg::commit(&q_c, srs),
-        q_arith_comm: kzg::commit(&q_arith, srs),
+        q_m_comm: p(kzg::commit(&q_m, srs)),
+        q_1_comm: p(kzg::commit(&q_1, srs)),
+        q_2_comm: p(kzg::commit(&q_2, srs)),
+        q_3_comm: p(kzg::commit(&q_3, srs)),
+        q_4_comm: p(kzg::commit(&q_4, srs)),
+        q_c_comm: p(kzg::commit(&q_c, srs)),
+        q_arith_comm: p(kzg::commit(&q_arith, srs)),
         sigma_comms: [
-            kzg::commit(&sigmas[0], srs),
-            kzg::commit(&sigmas[1], srs),
-            kzg::commit(&sigmas[2], srs),
-            kzg::commit(&sigmas[3], srs),
+            p(kzg::commit(&sigmas[0], srs)),
+            p(kzg::commit(&sigmas[1], srs)),
+            p(kzg::commit(&sigmas[2], srs)),
+            p(kzg::commit(&sigmas[3], srs)),
         ],
         domain_size: n,
         num_public_inputs: num_public,
-        omega,
-        k,
+        omega: f(omega),
+        k: [f(k[0]), f(k[1]), f(k[2]), f(k[3])],
     };
 
     let pd = ProvingData {
@@ -433,14 +427,16 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
 
     let mut transcript = Transcript::new(b"genshi_plonk");
     for c in &w_comms {
-        transcript.absorb_point(b"w", c);
+        transcript.absorb_point(b"w", &p(*c));
     }
 
     // ================================================================
     // Round 2: Permutation grand product z(X)
     // ================================================================
-    let beta = transcript.squeeze_challenge(b"beta");
-    let gamma = transcript.squeeze_challenge(b"gamma");
+    // Challenges come out of the transcript as `genshi_math::Fr`; unwrap
+    // back to ark for the prover-side FFT/commit path.
+    let beta = af(transcript.squeeze_challenge(b"beta"));
+    let gamma = af(transcript.squeeze_challenge(b"gamma"));
 
     let z_evals = compute_grand_product(
         &pd.wire_evals, &pd.sigmas, omega, n, &pd.k, beta, gamma,
@@ -448,12 +444,12 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
     let z_coeffs = ifft(&z_evals, omega, n);
     let z_comm = kzg::commit(&z_coeffs, srs);
 
-    transcript.absorb_point(b"z", &z_comm);
+    transcript.absorb_point(b"z", &p(z_comm));
 
     // ================================================================
     // Round 3: Quotient polynomial t(X)
     // ================================================================
-    let alpha = transcript.squeeze_challenge(b"alpha");
+    let alpha = af(transcript.squeeze_challenge(b"alpha"));
 
     let t_coeffs = compute_quotient(
         &w_coeffs, &pd, &z_coeffs, &z_evals,
@@ -475,15 +471,15 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
         t_parts.push(vec![Fr::zero(); n]);
     }
 
-    let t_comms: Vec<G1Affine> = t_parts.iter().map(|p| kzg::commit(p, srs)).collect();
+    let t_comms: Vec<G1Affine> = t_parts.iter().map(|poly| kzg::commit(poly, srs)).collect();
     for c in &t_comms {
-        transcript.absorb_point(b"t", c);
+        transcript.absorb_point(b"t", &p(*c));
     }
 
     // ================================================================
     // Round 4: Evaluations at challenge ζ
     // ================================================================
-    let zeta = transcript.squeeze_challenge(b"zeta");
+    let zeta = af(transcript.squeeze_challenge(b"zeta"));
     let zeta_omega = zeta * omega;
 
     let w_evals = [
@@ -523,24 +519,25 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
         zeta_pow *= zeta_n;
     }
 
-    // Absorb evaluations
+    // Absorb evaluations. Transcript speaks `genshi_math::Fr`; the local
+    // scalars are still arkworks-typed, so wrap each one at the boundary.
     for e in &w_evals {
-        transcript.absorb_scalar(b"we", e);
+        transcript.absorb_scalar(b"we", &f(*e));
     }
     for e in &sigma_evals {
-        transcript.absorb_scalar(b"se", e);
+        transcript.absorb_scalar(b"se", &f(*e));
     }
-    transcript.absorb_scalar(b"ze", &z_eval);
-    transcript.absorb_scalar(b"zw", &z_omega_eval);
+    transcript.absorb_scalar(b"ze", &f(z_eval));
+    transcript.absorb_scalar(b"zw", &f(z_omega_eval));
     for e in &selector_evals {
-        transcript.absorb_scalar(b"qe", e);
+        transcript.absorb_scalar(b"qe", &f(*e));
     }
-    transcript.absorb_scalar(b"te", &t_eval);
+    transcript.absorb_scalar(b"te", &f(t_eval));
 
     // ================================================================
     // Round 5: Opening proofs
     // ================================================================
-    let nu = transcript.squeeze_challenge(b"nu");
+    let nu = af(transcript.squeeze_challenge(b"nu"));
 
     // Collect all polynomials to open at ζ
     let polys_at_zeta: Vec<&[Fr]> = vec![
@@ -556,18 +553,24 @@ pub fn prove(builder: &UltraCircuitBuilder, srs: &SRS) -> (Proof, VerificationKe
     let z_opening = kzg::open(&z_coeffs, zeta_omega, srs);
     let w_zeta_omega = z_opening.witness;
 
+    // Package into the backend-agnostic `Proof` struct. All ark scalars and
+    // G1 points are wrapped into `genshi_math` types at this single boundary.
     let proof = Proof {
-        w_comms,
-        z_comm,
-        t_comms,
-        w_evals,
-        sigma_evals,
-        z_eval,
-        z_omega_eval,
-        selector_evals,
-        t_eval,
-        w_zeta,
-        w_zeta_omega,
+        w_comms: [p(w_comms[0]), p(w_comms[1]), p(w_comms[2]), p(w_comms[3])],
+        z_comm: p(z_comm),
+        t_comms: t_comms.into_iter().map(p).collect(),
+        w_evals: [f(w_evals[0]), f(w_evals[1]), f(w_evals[2]), f(w_evals[3])],
+        sigma_evals: [f(sigma_evals[0]), f(sigma_evals[1]), f(sigma_evals[2]), f(sigma_evals[3])],
+        z_eval: f(z_eval),
+        z_omega_eval: f(z_omega_eval),
+        selector_evals: [
+            f(selector_evals[0]), f(selector_evals[1]), f(selector_evals[2]),
+            f(selector_evals[3]), f(selector_evals[4]), f(selector_evals[5]),
+            f(selector_evals[6]),
+        ],
+        t_eval: f(t_eval),
+        w_zeta: p(w_zeta),
+        w_zeta_omega: p(w_zeta_omega),
     };
 
     (proof, vk)
@@ -750,7 +753,6 @@ fn compute_quotient(
 mod tests {
     use super::*;
     use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
-    use ark_ec::AffineRepr;
 
     #[test]
     fn test_compute_omega() {
