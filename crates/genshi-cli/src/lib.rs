@@ -594,7 +594,87 @@ enum SrsCmd {
 ///
 /// This is the function downstream crates call from their `src/bin/genshi.rs`.
 /// It is also what the `genshi` binary shipped with this crate invokes.
+/// When the globally-installed `genshi` binary is invoked inside a scaffolded
+/// genshi application, transparently re-exec through `cargo run --quiet --bin
+/// genshi --` so the user's `register!`-linked circuits are present in the
+/// resulting binary. One `cargo install genshi-cli` then works forever —
+/// editing circuits, adding new ones, switching between apps — without any
+/// `cargo install --force` dance. Circuits are always fresh because cargo
+/// rebuilds them on demand.
+///
+/// Subcommands that don't touch the circuit registry (`new`, `srs`, help,
+/// version) run directly in the installed binary, so the user is never
+/// blocked by an unrelated app's compile errors.
+///
+/// An infinite-loop guard (`GENSHI_DELEGATED=1`) prevents the delegated
+/// binary from re-delegating to itself.
+fn try_delegate_to_app() -> Option<ExitCode> {
+    use std::env;
+    use std::process::Command;
+
+    if env::var_os("GENSHI_DELEGATED").is_some() {
+        return None;
+    }
+
+    let first = env::args().nth(1);
+    if matches!(
+        first.as_deref(),
+        Some("new")
+            | Some("srs")
+            | Some("help")
+            | Some("--help")
+            | Some("-h")
+            | Some("--version")
+            | Some("-V")
+            | None
+    ) {
+        return None;
+    }
+
+    let app_root = find_scaffolded_app_root()?;
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    let status = Command::new("cargo")
+        .args(["run", "--quiet", "--bin", "genshi", "--"])
+        .args(&args)
+        .current_dir(&app_root)
+        .env("GENSHI_DELEGATED", "1")
+        .status()
+        .ok()?;
+
+    Some(match status.code() {
+        Some(code) if (0..=255).contains(&code) => ExitCode::from(code as u8),
+        _ => ExitCode::FAILURE,
+    })
+}
+
+/// Walk up from the current working directory looking for a scaffolded
+/// genshi app — defined as a directory with both `Cargo.toml` (containing a
+/// `genshi-cli` dependency) and `src/bin/genshi.rs`. Returns the first match.
+fn find_scaffolded_app_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        let bin_genshi = dir.join("src").join("bin").join("genshi.rs");
+        if cargo_toml.is_file() && bin_genshi.is_file() {
+            if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
+                if contents.contains("genshi-cli") || contents.contains("genshi_cli") {
+                    return Some(dir);
+                }
+            }
+        }
+        let parent = dir.parent()?.to_path_buf();
+        if parent == dir {
+            return None;
+        }
+        dir = parent;
+    }
+}
+
 pub fn run() -> ExitCode {
+    if let Some(code) = try_delegate_to_app() {
+        return code;
+    }
     let cli = Cli::parse();
 
     match cli.command {
