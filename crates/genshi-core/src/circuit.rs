@@ -1,24 +1,32 @@
-//! The `Circuit` trait — the contract between an application and the genshi framework.
+//! Circuit trait split — verifier-side (`Circuit`) and prover-side (`ProvableCircuit`).
 //!
-//! An application defines a type that implements `Circuit` for each distinct
-//! proof statement it wants to support. The framework then drives synthesis,
-//! proving, and verification generically over any such type.
+//! `Circuit` carries only the metadata the verifier needs (public-input count and a
+//! stable ID). `ProvableCircuit` extends it with the witness type and the synthesis
+//! function required for proof generation. The split lets Solana BPF builds strip the
+//! prover path (arithmetization + gadgets + synthesis) while still knowing how to
+//! verify proofs for a given circuit.
 //!
 //! # Example
 //!
 //! ```
-//! use genshi_core::{Circuit, arithmetization::ultra_circuit_builder::UltraCircuitBuilder};
+//! use genshi_core::Circuit;
+//! # #[cfg(feature = "prover")]
+//! # use genshi_core::{ProvableCircuit, arithmetization::ultra_circuit_builder::UltraCircuitBuilder};
 //! use ark_bn254::Fr;
 //!
 //! pub struct AddCircuit;
 //! pub struct AddWitness { pub a: Fr, pub b: Fr }
 //!
 //! impl Circuit for AddCircuit {
-//!     type Witness = AddWitness;
 //!     type PublicInputs = [Fr; 1];
 //!     const ID: &'static str = "example.add";
 //!
 //!     fn num_public_inputs() -> usize { 1 }
+//! }
+//!
+//! # #[cfg(feature = "prover")]
+//! impl ProvableCircuit for AddCircuit {
+//!     type Witness = AddWitness;
 //!
 //!     fn synthesize(builder: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
 //!         let a = builder.add_variable(w.a);
@@ -36,20 +44,15 @@
 
 use ark_bn254::Fr;
 
+#[cfg(feature = "prover")]
 use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 
-/// Framework contract implemented by every application circuit.
+/// Verifier-side circuit metadata.
 ///
-/// An implementer provides:
-/// - a `Witness` type carrying all private + public inputs in native form,
-/// - a `PublicInputs` type (typically a fixed-size array of `Fr`),
-/// - a stable string `ID` used by SRS/VK bookkeeping,
-/// - a `synthesize` function that wires the constraint system, and
-/// - a `dummy_witness` used at setup time to extract the verification key.
+/// Every application circuit implements this. The bounds are intentionally
+/// minimal so this trait compiles on `no_std` verifier-only builds (Solana BPF)
+/// with zero dependency on the prover path.
 pub trait Circuit {
-    /// Native witness data handed to `synthesize`.
-    type Witness;
-
     /// Public inputs produced by the circuit, in the order enforced inside it.
     type PublicInputs: AsRef<[Fr]>;
 
@@ -58,6 +61,16 @@ pub trait Circuit {
 
     /// Number of public inputs this circuit exposes. Must match `PublicInputs::as_ref().len()`.
     fn num_public_inputs() -> usize;
+}
+
+/// Prover-side circuit contract. Only compiled when the `prover` feature is on.
+///
+/// Extends `Circuit` with the witness type and the synthesis function. Setup and
+/// proving take a `C: ProvableCircuit` bound; verification takes only `C: Circuit`.
+#[cfg(feature = "prover")]
+pub trait ProvableCircuit: Circuit {
+    /// Native witness data handed to `synthesize`.
+    type Witness;
 
     /// Wire the circuit's constraints into `builder` given `witness`, returning
     /// the public inputs in the same order the circuit publishes them.
@@ -77,7 +90,7 @@ pub trait Circuit {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prover"))]
 mod tests {
     use super::*;
     use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
@@ -91,11 +104,14 @@ mod tests {
     struct TestAddWitness { a: Fr, b: Fr }
 
     impl Circuit for TestAddCircuit {
-        type Witness = TestAddWitness;
         type PublicInputs = [Fr; 1];
         const ID: &'static str = "test.add";
 
         fn num_public_inputs() -> usize { 1 }
+    }
+
+    impl ProvableCircuit for TestAddCircuit {
+        type Witness = TestAddWitness;
 
         fn synthesize(
             builder: &mut UltraCircuitBuilder,
@@ -118,11 +134,14 @@ mod tests {
     struct TestMulWitness { a: Fr, b: Fr, c: Fr }
 
     impl Circuit for TestMulCircuit {
-        type Witness = TestMulWitness;
         type PublicInputs = [Fr; 0];
         const ID: &'static str = "test.mul";
 
         fn num_public_inputs() -> usize { 0 }
+    }
+
+    impl ProvableCircuit for TestMulCircuit {
+        type Witness = TestMulWitness;
 
         fn synthesize(
             builder: &mut UltraCircuitBuilder,
