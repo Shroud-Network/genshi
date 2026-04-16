@@ -14,13 +14,16 @@
 //! [`public_inputs_to_bytes_le`]) provide the two ordering conventions
 //! that the two VMs' instruction encoders expect at the application
 //! boundary.
+//!
+//! This module lives on the verifier path (Solana BPF reads proofs from
+//! PDA bytes), so every helper here is expressed in terms of
+//! `genshi_math::{Fr, G1Affine}` — the backend-agnostic surface that the
+//! BPF build will implement in Phase 2 without pulling in arkworks.
 
-use ark_bn254::{Fq, Fr, G1Affine};
-use ark_ec::AffineRepr;
-use ark_ff::{BigInteger, PrimeField};
+use genshi_math::{Fr, G1Affine};
 use alloc::vec::Vec;
 
-use super::prover::{Proof, VerificationKey};
+use super::types::{Proof, VerificationKey};
 
 /// Serialization error.
 #[derive(Debug)]
@@ -43,17 +46,8 @@ const FR_SIZE: usize = 32;
 // Low-level helpers
 // ============================================================================
 
-fn serialize_g1(point: &G1Affine) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(G1_UNCOMPRESSED_SIZE);
-    if point.is_zero() {
-        buf.resize(G1_UNCOMPRESSED_SIZE, 0);
-        return buf;
-    }
-    let x: Fq = point.x().unwrap();
-    let y: Fq = point.y().unwrap();
-    buf.extend_from_slice(&x.into_bigint().to_bytes_be());
-    buf.extend_from_slice(&y.into_bigint().to_bytes_be());
-    buf
+fn serialize_g1(point: &G1Affine) -> [u8; G1_UNCOMPRESSED_SIZE] {
+    point.to_uncompressed_bytes()
 }
 
 fn deserialize_g1(bytes: &[u8]) -> Result<G1Affine, SerError> {
@@ -63,21 +57,13 @@ fn deserialize_g1(bytes: &[u8]) -> Result<G1Affine, SerError> {
             got: bytes.len(),
         });
     }
-    // All-zero encoding represents the identity element.
-    if bytes[..G1_UNCOMPRESSED_SIZE].iter().all(|&b| b == 0) {
-        return Ok(G1Affine::zero());
-    }
-    let x = Fq::from_be_bytes_mod_order(&bytes[..32]);
-    let y = Fq::from_be_bytes_mod_order(&bytes[32..64]);
-    let point = G1Affine::new_unchecked(x, y);
-    if !point.is_on_curve() || !point.is_in_correct_subgroup_assuming_on_curve() {
-        return Err(SerError::DeserializeFailed);
-    }
-    Ok(point)
+    let mut chunk = [0u8; G1_UNCOMPRESSED_SIZE];
+    chunk.copy_from_slice(&bytes[..G1_UNCOMPRESSED_SIZE]);
+    G1Affine::from_uncompressed_bytes(&chunk).ok_or(SerError::DeserializeFailed)
 }
 
-fn serialize_fr(scalar: &Fr) -> Vec<u8> {
-    scalar.into_bigint().to_bytes_be()
+fn serialize_fr(scalar: &Fr) -> [u8; FR_SIZE] {
+    scalar.to_be_bytes()
 }
 
 fn deserialize_fr(bytes: &[u8]) -> Result<Fr, SerError> {
@@ -87,14 +73,9 @@ fn deserialize_fr(bytes: &[u8]) -> Result<Fr, SerError> {
             got: bytes.len(),
         });
     }
-    // Strict canonical check: the 32-byte big-endian integer must be
-    // strictly less than the Fr modulus. Anything else is rejected so
-    // that round-tripping is truly deterministic (no silent reduction).
-    let reduced = Fr::from_be_bytes_mod_order(&bytes[..FR_SIZE]);
-    if reduced.into_bigint().to_bytes_be() != bytes[..FR_SIZE] {
-        return Err(SerError::DeserializeFailed);
-    }
-    Ok(reduced)
+    let mut chunk = [0u8; FR_SIZE];
+    chunk.copy_from_slice(&bytes[..FR_SIZE]);
+    Fr::from_be_bytes_canonical(&chunk).ok_or(SerError::DeserializeFailed)
 }
 
 // ============================================================================
@@ -188,7 +169,7 @@ pub fn proof_from_bytes(bytes: &[u8]) -> Result<Proof, SerError> {
     };
 
     // Wire commitments
-    let mut w_comms = [G1Affine::default(); 4];
+    let mut w_comms = [G1Affine::zero(); 4];
     for i in 0..4 {
         w_comms[i] = read_g1(&mut offset)?;
     }
@@ -205,12 +186,12 @@ pub fn proof_from_bytes(bytes: &[u8]) -> Result<Proof, SerError> {
         t_comms.push(read_g1(&mut offset)?);
     }
     // Wire evaluations
-    let mut w_evals = [Fr::default(); 4];
+    let mut w_evals = [Fr::zero(); 4];
     for i in 0..4 {
         w_evals[i] = read_fr(&mut offset)?;
     }
     // Sigma evaluations
-    let mut sigma_evals = [Fr::default(); 4];
+    let mut sigma_evals = [Fr::zero(); 4];
     for i in 0..4 {
         sigma_evals[i] = read_fr(&mut offset)?;
     }
@@ -218,7 +199,7 @@ pub fn proof_from_bytes(bytes: &[u8]) -> Result<Proof, SerError> {
     let z_eval = read_fr(&mut offset)?;
     let z_omega_eval = read_fr(&mut offset)?;
     // Selector evaluations
-    let mut selector_evals = [Fr::default(); 7];
+    let mut selector_evals = [Fr::zero(); 7];
     for i in 0..7 {
         selector_evals[i] = read_fr(&mut offset)?;
     }
@@ -319,7 +300,7 @@ pub fn vk_from_bytes(bytes: &[u8]) -> Result<VerificationKey, SerError> {
     let q_c_comm = read_g1(&mut offset)?;
     let q_arith_comm = read_g1(&mut offset)?;
 
-    let mut sigma_comms = [G1Affine::default(); 4];
+    let mut sigma_comms = [G1Affine::zero(); 4];
     for i in 0..4 {
         sigma_comms[i] = read_g1(&mut offset)?;
     }
@@ -334,7 +315,7 @@ pub fn vk_from_bytes(bytes: &[u8]) -> Result<VerificationKey, SerError> {
 
     let omega = read_fr(&mut offset)?;
 
-    let mut k = [Fr::default(); 4];
+    let mut k = [Fr::zero(); 4];
     for i in 0..4 {
         k[i] = read_fr(&mut offset)?;
     }
@@ -368,8 +349,7 @@ pub fn vk_from_bytes(bytes: &[u8]) -> Result<VerificationKey, SerError> {
 pub fn public_inputs_to_bytes_be(inputs: &[Fr]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(inputs.len() * FR_SIZE);
     for input in inputs {
-        let be_bytes = input.into_bigint().to_bytes_be();
-        buf.extend_from_slice(&be_bytes);
+        buf.extend_from_slice(&input.to_be_bytes());
     }
     buf
 }
@@ -382,7 +362,7 @@ pub fn public_inputs_to_bytes_be(inputs: &[Fr]) -> Vec<u8> {
 pub fn public_inputs_to_bytes_le(inputs: &[Fr]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(inputs.len() * FR_SIZE);
     for input in inputs {
-        buf.extend_from_slice(&input.into_bigint().to_bytes_le());
+        buf.extend_from_slice(&input.to_le_bytes());
     }
     buf
 }
@@ -391,23 +371,27 @@ pub fn public_inputs_to_bytes_le(inputs: &[Fr]) -> Vec<u8> {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "prover"))]
 mod tests {
     use super::*;
-    use ark_ff::Zero;
+    use ark_bn254::Fr as ArkFr;
     use crate::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
     use crate::proving::prover;
     use crate::proving::srs::SRS;
 
+    fn af(v: u64) -> ArkFr {
+        ArkFr::from(v)
+    }
+
     fn make_simple_proof() -> (Proof, VerificationKey, Vec<Fr>) {
         let mut builder = UltraCircuitBuilder::new();
-        let a = builder.add_variable(Fr::from(3u64));
-        let b = builder.add_variable(Fr::from(5u64));
+        let a = builder.add_variable(af(3));
+        let b = builder.add_variable(af(5));
         let c = builder.add(a, b);
         builder.set_public(c);
         let srs = SRS::insecure_for_testing(1024);
         let (proof, vk) = prover::prove(&builder, &srs);
-        let pi = vec![Fr::from(8u64)];
+        let pi = alloc::vec![Fr::from(8u64)];
         (proof, vk, pi)
     }
 
@@ -461,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_public_inputs_be_le_consistency() {
-        let inputs = vec![Fr::from(42u64), Fr::from(100u64)];
+        let inputs = alloc::vec![Fr::from(42u64), Fr::from(100u64)];
 
         let le = public_inputs_to_bytes_le(&inputs);
         let be = public_inputs_to_bytes_be(&inputs);
@@ -522,7 +506,7 @@ mod tests {
     #[test]
     fn test_deserialize_corrupted_g1_point_fails() {
         // A G1 point where x,y are valid field elements but NOT on the curve
-        let mut fake = vec![0u8; 64];
+        let mut fake = alloc::vec![0u8; 64];
         // Set x = 1, y = 1 — almost certainly not on BN254 G1
         fake[31] = 1;
         fake[63] = 1;
@@ -531,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_g1_identity() {
-        let zeros = vec![0u8; 64];
+        let zeros = alloc::vec![0u8; 64];
         let point = deserialize_g1(&zeros).expect("All-zero should decode to identity");
         assert!(point.is_zero(), "All-zero bytes should be the identity");
     }
@@ -549,7 +533,7 @@ mod tests {
     #[test]
     fn test_deserialize_fr_above_modulus_fails() {
         // Fr modulus for BN254 is ~2^254. Set all bytes to 0xFF — well above modulus.
-        let all_ff = vec![0xFFu8; 32];
+        let all_ff = alloc::vec![0xFFu8; 32];
         assert!(
             deserialize_fr(&all_ff).is_err(),
             "Value above Fr modulus should fail canonical check"
@@ -558,14 +542,14 @@ mod tests {
 
     #[test]
     fn test_deserialize_fr_zero() {
-        let zeros = vec![0u8; 32];
+        let zeros = alloc::vec![0u8; 32];
         let s = deserialize_fr(&zeros).expect("Zero should be valid");
         assert!(s.is_zero());
     }
 
     #[test]
     fn test_deserialize_fr_one() {
-        let mut bytes = vec![0u8; 32];
+        let mut bytes = alloc::vec![0u8; 32];
         bytes[31] = 1; // big-endian 1
         let s = deserialize_fr(&bytes).expect("One should be valid");
         assert_eq!(s, Fr::from(1u64));
