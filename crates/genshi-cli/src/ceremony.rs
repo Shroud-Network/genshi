@@ -13,9 +13,10 @@
 //! so it's directly loadable by `SRS::load_from_bytes()` and compatible
 //! with every genshi command that takes `--srs`.
 
-use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_bn254::{Bn254, Fr, G1Affine as ArkG1Affine, G1Projective, G2Affine as ArkG2Affine, G2Projective};
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, PrimeGroup};
 use ark_ff::{One, UniformRand};
+use genshi_math::{G1Affine, G2Affine};
 use rand::rngs::OsRng;
 use zeroize::Zeroize;
 
@@ -31,16 +32,16 @@ use genshi_core::proving::srs::SRS;
 #[derive(Clone, Debug)]
 pub struct ContributionReceipt {
     pub participant_index: usize,
-    pub witness_g1: G1Affine,
-    pub witness_g2: G2Affine,
+    pub witness_g1: ArkG1Affine,
+    pub witness_g2: ArkG2Affine,
 }
 
 impl ContributionReceipt {
     /// Verify the receipt is internally consistent (the same scalar was
     /// used for both G1 and G2 witnesses).
     pub fn verify_witness(&self) -> bool {
-        let g1 = G1Affine::generator();
-        let g2 = G2Affine::generator();
+        let g1 = ArkG1Affine::generator();
+        let g2 = ArkG2Affine::generator();
         // e(witness_g1, G2_gen) == e(G1_gen, witness_g2)
         Bn254::pairing(self.witness_g1, g2) == Bn254::pairing(g1, self.witness_g2)
     }
@@ -66,14 +67,14 @@ pub fn contribute(srs: &mut SRS, participant_index: usize) -> ContributionReceip
     // Accumulate s^0, s^1, s^2, ... across G1 powers
     let mut power = Fr::one();
     for pt in srs.g1_powers.iter_mut() {
-        let proj: G1Projective = (*pt).into();
-        *pt = (proj * power).into_affine();
+        let proj: G1Projective = pt.to_ark().into();
+        *pt = G1Affine::from_ark((proj * power).into_affine());
         power *= secret;
     }
 
     // G2: g2 stays (s^0 = 1), g2_tau gets multiplied by s
-    let g2_tau_proj: G2Projective = srs.g2_tau.into();
-    srs.g2_tau = (g2_tau_proj * secret).into_affine();
+    let g2_tau_proj: G2Projective = srs.g2_tau.to_ark().into();
+    srs.g2_tau = G2Affine::from_ark((g2_tau_proj * secret).into_affine());
 
     // CRITICAL: destroy the secret. This is the entire trust model.
     secret.zeroize();
@@ -110,8 +111,8 @@ pub fn verify_srs(srs: &SRS) -> Result<(), String> {
 
     // Pairing consistency: e(g1_powers[i+1], g2) == e(g1_powers[i], g2_tau)
     for i in 0..srs.g1_powers.len() - 1 {
-        let lhs = Bn254::pairing(srs.g1_powers[i + 1], srs.g2);
-        let rhs = Bn254::pairing(srs.g1_powers[i], srs.g2_tau);
+        let lhs = Bn254::pairing(srs.g1_powers[i + 1].to_ark(), srs.g2.to_ark());
+        let rhs = Bn254::pairing(srs.g1_powers[i].to_ark(), srs.g2_tau.to_ark());
 
         if lhs != rhs {
             return Err(format!(
@@ -217,7 +218,7 @@ mod tests {
     fn tampered_srs_fails_verification() {
         let (mut srs, _) = run_ceremony(7, 2);
         let rogue = (G1Projective::generator() * Fr::from(9999u64)).into_affine();
-        srs.g1_powers[3] = rogue;
+        srs.g1_powers[3] = G1Affine::from_ark(rogue);
         assert!(verify_srs(&srs).is_err());
     }
 
@@ -254,7 +255,8 @@ mod tests {
 
         let vk = genshi_core::proving::prover::extract_vk_from_builder(&builder, &srs);
         let (proof, _) = genshi_core::proving::prover::prove(&builder, &srs);
-        let public_inputs = vec![Fr::from(8u64)];
+        let public_inputs: Vec<genshi_math::Fr> =
+            vec![genshi_math::Fr::from_ark(Fr::from(8u64))];
 
         assert!(
             genshi_core::proving::verifier::verify(&proof, &vk, &public_inputs, &srs),
