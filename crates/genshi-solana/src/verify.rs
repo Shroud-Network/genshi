@@ -8,9 +8,9 @@
 //! On Solana BPF (`target_os = "solana"`): routes through the
 //! `sol_alt_bn128_pairing` syscall via the `solana-program` crate.
 
-use ark_bn254::Fr;
+use genshi_math::Fr;
 
-use genshi_core::proving::prover::{Proof, VerificationKey};
+use genshi_core::proving::types::{Proof, VerificationKey};
 use genshi_core::proving::srs::SRS;
 use genshi_core::proving::verifier::verify_prepare;
 use genshi_core::proving::serialization::{proof_from_bytes, vk_from_bytes};
@@ -75,27 +75,28 @@ pub fn verify_from_bytes(
     Ok(verify_with_syscalls(&proof, &vk, &public_inputs, srs))
 }
 
-use ark_ff::PrimeField;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_bn254::Fr as ArkFr;
     use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
     use genshi_core::proving::prover;
     use genshi_core::proving::srs::SRS;
     use genshi_core::proving::serialization::{proof_to_bytes, vk_to_bytes, public_inputs_to_bytes_le};
 
+    fn gf(v: u64) -> Fr { Fr::from(v) }
+
     #[test]
     fn test_verify_with_syscalls_simple() {
         let srs = SRS::insecure_for_testing(128);
         let mut builder = UltraCircuitBuilder::new();
-        let a = builder.add_variable(Fr::from(3u64));
-        let b = builder.add_variable(Fr::from(5u64));
+        let a = builder.add_variable(ArkFr::from(3u64));
+        let b = builder.add_variable(ArkFr::from(5u64));
         let c = builder.add(a, b);
         builder.set_public(c);
 
         let (proof, vk) = prover::prove(&builder, &srs);
-        let pi = vec![Fr::from(8u64)];
+        let pi = vec![gf(8)];
 
         assert!(verify_with_syscalls(&proof, &vk, &pi, &srs),
             "Syscall-based verification should pass");
@@ -105,13 +106,13 @@ mod tests {
     fn test_verify_with_syscalls_wrong_pi() {
         let srs = SRS::insecure_for_testing(128);
         let mut builder = UltraCircuitBuilder::new();
-        let a = builder.add_variable(Fr::from(3u64));
-        let b = builder.add_variable(Fr::from(5u64));
+        let a = builder.add_variable(ArkFr::from(3u64));
+        let b = builder.add_variable(ArkFr::from(5u64));
         let c = builder.add(a, b);
         builder.set_public(c);
 
         let (proof, vk) = prover::prove(&builder, &srs);
-        let wrong_pi = vec![Fr::from(9u64)];
+        let wrong_pi = vec![gf(9)];
 
         assert!(!verify_with_syscalls(&proof, &vk, &wrong_pi, &srs),
             "Wrong PI should fail");
@@ -121,13 +122,13 @@ mod tests {
     fn test_verify_from_bytes_roundtrip() {
         let srs = SRS::insecure_for_testing(128);
         let mut builder = UltraCircuitBuilder::new();
-        let a = builder.add_variable(Fr::from(10u64));
-        let b = builder.add_variable(Fr::from(20u64));
+        let a = builder.add_variable(ArkFr::from(10u64));
+        let b = builder.add_variable(ArkFr::from(20u64));
         let c = builder.add(a, b);
         builder.set_public(c);
 
         let (proof, vk) = prover::prove(&builder, &srs);
-        let pi = vec![Fr::from(30u64)];
+        let pi = vec![gf(30)];
 
         let proof_bytes = proof_to_bytes(&proof);
         let vk_bytes = vk_to_bytes(&vk);
@@ -141,18 +142,21 @@ mod tests {
     fn test_verify_circuit_trait_proof() {
         // End-to-end: produce a proof via genshi_core::api::prove::<C>(),
         // round-trip through bytes, and verify with the Solana-side helper.
-        use genshi_core::circuit::Circuit;
+        use genshi_core::circuit::{Circuit, ProvableCircuit};
         use genshi_core::proving::api;
 
         struct AddCircuit;
-        struct AddWitness { a: Fr, b: Fr }
+        struct AddWitness { a: ArkFr, b: ArkFr }
 
         impl Circuit for AddCircuit {
-            type Witness = AddWitness;
-            type PublicInputs = [Fr; 1];
+            type PublicInputs = [ArkFr; 1];
             const ID: &'static str = "genshi-solana.test.add";
 
             fn num_public_inputs() -> usize { 1 }
+        }
+
+        impl ProvableCircuit for AddCircuit {
+            type Witness = AddWitness;
 
             fn synthesize(
                 builder: &mut genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder,
@@ -166,17 +170,18 @@ mod tests {
             }
 
             fn dummy_witness() -> Self::Witness {
-                AddWitness { a: Fr::from(0u64), b: Fr::from(0u64) }
+                AddWitness { a: ArkFr::from(0u64), b: ArkFr::from(0u64) }
             }
         }
 
         let srs = SRS::insecure_for_testing(128);
-        let witness = AddWitness { a: Fr::from(11u64), b: Fr::from(22u64) };
+        let witness = AddWitness { a: ArkFr::from(11u64), b: ArkFr::from(22u64) };
         let (proof, vk, pi) = api::prove::<AddCircuit>(&witness, &srs);
 
         let proof_bytes = proof_to_bytes(&proof);
         let vk_bytes = vk_to_bytes(&vk);
-        let pi_bytes = public_inputs_to_bytes_le(pi.as_ref());
+        let pi_g: Vec<Fr> = pi.iter().copied().map(Fr::from_ark).collect();
+        let pi_bytes = public_inputs_to_bytes_le(&pi_g);
 
         let result = verify_from_bytes(&proof_bytes, &vk_bytes, &pi_bytes, &srs);
         assert!(result.unwrap(), "Circuit-trait proof must verify on Solana entry point");
@@ -186,13 +191,13 @@ mod tests {
     fn test_verify_matches_native() {
         let srs = SRS::insecure_for_testing(128);
         let mut builder = UltraCircuitBuilder::new();
-        let a = builder.add_variable(Fr::from(7u64));
-        let b = builder.add_variable(Fr::from(3u64));
+        let a = builder.add_variable(ArkFr::from(7u64));
+        let b = builder.add_variable(ArkFr::from(3u64));
         let c = builder.mul(a, b);
         builder.set_public(c);
 
         let (proof, vk) = prover::prove(&builder, &srs);
-        let pi = vec![Fr::from(21u64)];
+        let pi = vec![gf(21)];
 
         // Both verification paths should agree
         let native = genshi_core::proving::verifier::verify(&proof, &vk, &pi, &srs);
