@@ -23,6 +23,7 @@
 //! hash), the [`commitment_with_pedersen_gadget`] convenience function handles
 //! injecting pre-computed Pedersen coordinates as witness values.
 
+use alloc::vec::Vec;
 use ark_bn254::Fr;
 
 use crate::arithmetization::ultra_circuit_builder::{UltraCircuitBuilder, WireRef};
