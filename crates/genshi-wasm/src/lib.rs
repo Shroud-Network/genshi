@@ -34,7 +34,7 @@
 //!
 //! ```
 //! use ark_bn254::Fr;
-//! use genshi_core::Circuit;
+//! use genshi_core::{Circuit, ProvableCircuit};
 //! use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
 //! use genshi_core::proving::srs::SRS;
 //! use genshi_wasm::{prove_circuit, split_proof_blob};
@@ -43,10 +43,13 @@
 //! struct AddWitness { a: Fr, b: Fr }
 //!
 //! impl Circuit for AddCircuit {
-//!     type Witness = AddWitness;
 //!     type PublicInputs = [Fr; 1];
 //!     const ID: &'static str = "doctest.wasm.add";
 //!     fn num_public_inputs() -> usize { 1 }
+//! }
+//!
+//! impl ProvableCircuit for AddCircuit {
+//!     type Witness = AddWitness;
 //!     fn synthesize(b: &mut UltraCircuitBuilder, w: &Self::Witness) -> Self::PublicInputs {
 //!         let a = b.add_variable(w.a);
 //!         let bb = b.add_variable(w.b);
@@ -71,7 +74,6 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use genshi_core::circuit::Circuit;
 use genshi_core::proving::api;
 use genshi_core::proving::prover::{Proof, VerificationKey};
 use genshi_core::proving::serialization::{
@@ -130,7 +132,7 @@ pub fn split_proof_blob(blob: &[u8]) -> Result<(&[u8], &[u8]), &'static str> {
 /// Internally this is a thin wrapper around [`genshi_core::proving::api::prove`]
 /// that handles SRS deserialization and proof/PI byte composition for the
 /// browser side.
-pub fn prove_circuit<C: Circuit>(
+pub fn prove_circuit<C: genshi_core::ProvableCircuit>(
     witness: &C::Witness,
     srs_bytes: &[u8],
 ) -> Result<(Vec<u8>, Vec<u8>), &'static str> {
@@ -141,7 +143,15 @@ pub fn prove_circuit<C: Circuit>(
     let (proof, vk, public_inputs) = api::prove::<C>(witness, &srs);
 
     let proof_bytes = proof_to_bytes(&proof);
-    let pi_bytes = public_inputs_to_bytes_le(public_inputs.as_ref());
+    // `C::PublicInputs: AsRef<[ark_bn254::Fr]>` — wrap at this boundary so the
+    // serializer (which speaks `genshi_math::Fr`) can consume the slice.
+    let pi_g: Vec<genshi_math::Fr> = public_inputs
+        .as_ref()
+        .iter()
+        .copied()
+        .map(genshi_math::Fr::from_ark)
+        .collect();
+    let pi_bytes = public_inputs_to_bytes_le(&pi_g);
     let blob = compose_proof_blob(&proof_bytes, &pi_bytes);
 
     let vk_bytes = vk_to_bytes(&vk);
@@ -153,7 +163,7 @@ pub fn prove_circuit<C: Circuit>(
 /// Equivalent to calling [`genshi_core::proving::api::extract_vk`] and then
 /// serializing the result. Useful at setup time to ship a VK to the chain
 /// (or to a Solidity verifier emitter) without first generating a proof.
-pub fn extract_vk_bytes<C: Circuit>(srs_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+pub fn extract_vk_bytes<C: genshi_core::ProvableCircuit>(srs_bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
     let srs = SRS::load_from_bytes(srs_bytes);
     let vk = api::extract_vk::<C>(&srs);
     Ok(vk_to_bytes(&vk))
@@ -171,7 +181,12 @@ pub fn verify_proof_bytes(
 ) -> Result<bool, &'static str> {
     let proof: Proof = proof_from_bytes(proof_bytes).map_err(|_| "proof decode failed")?;
     let vk: VerificationKey = vk_from_bytes(vk_bytes).map_err(|_| "vk decode failed")?;
-    Ok(verifier::verify(&proof, &vk, public_inputs, srs))
+    let pi_g: Vec<genshi_math::Fr> = public_inputs
+        .iter()
+        .copied()
+        .map(genshi_math::Fr::from_ark)
+        .collect();
+    Ok(verifier::verify(&proof, &vk, &pi_g, srs))
 }
 
 // ============================================================================
@@ -263,6 +278,7 @@ mod tests {
     use super::*;
     use ark_bn254::Fr;
     use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+    use genshi_core::Circuit;
 
     /// Minimal Circuit impl used to exercise the generic driver in tests.
     struct AddCircuit;
@@ -272,13 +288,16 @@ mod tests {
     }
 
     impl Circuit for AddCircuit {
-        type Witness = AddWitness;
         type PublicInputs = [Fr; 1];
         const ID: &'static str = "genshi-wasm.test.add";
 
         fn num_public_inputs() -> usize {
             1
         }
+    }
+
+    impl genshi_core::ProvableCircuit for AddCircuit {
+        type Witness = AddWitness;
 
         fn synthesize(
             builder: &mut UltraCircuitBuilder,
