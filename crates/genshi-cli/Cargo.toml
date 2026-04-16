@@ -36,6 +36,7 @@ path = "src/main.rs"
 [dependencies]
 genshi-core = { workspace = true, features = ["serde"] }
 genshi-evm = { workspace = true }
+genshi-math = { workspace = true }
 clap = { workspace = true }
 inventory = { workspace = true }
 serde = { version = "1", features = ["derive"] }
