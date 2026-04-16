@@ -12,7 +12,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.85.0"
 license = "MIT OR Apache-2.0"
@@ -39,10 +39,10 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 # Internal framework crates. Both `path` and `version` are set so local
 # development resolves through the workspace while `cargo publish` records
 # a real version requirement in the registry.
-genshi-core   = { path = "crates/genshi-core",   version = "0.1.2" }
-genshi-evm    = { path = "crates/genshi-evm",    version = "0.1.2" }
-genshi-solana = { path = "crates/genshi-solana", version = "0.1.2" }
-genshi-wasm   = { path = "crates/genshi-wasm",   version = "0.1.2" }
+genshi-core   = { path = "crates/genshi-core",   version = "0.1.3" }
+genshi-evm    = { path = "crates/genshi-evm",    version = "0.1.3" }
+genshi-solana = { path = "crates/genshi-solana", version = "0.1.3" }
+genshi-wasm   = { path = "crates/genshi-wasm",   version = "0.1.3" }
 
 # Serialization (optional)
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

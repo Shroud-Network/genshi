@@ -634,8 +634,21 @@ fn try_delegate_to_app() -> Option<ExitCode> {
     let app_root = find_scaffolded_app_root()?;
     let args: Vec<String> = env::args().skip(1).collect();
 
+    // Release mode is non-negotiable: arkworks Fr/G1 arithmetic and FFTs run
+    // 20-50x slower in debug, so `genshi prove` on a real circuit takes tens
+    // of seconds in debug vs. sub-second in release. Users can override with
+    // GENSHI_CARGO_PROFILE=dev if they actually want debug builds.
+    let profile = env::var("GENSHI_CARGO_PROFILE").unwrap_or_else(|_| "release".to_string());
+    let mut cargo_args: Vec<&str> = vec!["run", "--quiet"];
+    if profile == "release" {
+        cargo_args.push("--release");
+    } else if profile != "dev" {
+        cargo_args.extend(["--profile", &profile]);
+    }
+    cargo_args.extend(["--bin", "genshi", "--"]);
+
     let status = Command::new("cargo")
-        .args(["run", "--quiet", "--bin", "genshi", "--"])
+        .args(&cargo_args)
         .args(&args)
         .current_dir(&app_root)
         .env("GENSHI_DELEGATED", "1")

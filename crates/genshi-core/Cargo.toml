@@ -31,7 +31,7 @@ ark-std = { version = "0.5", features = ["std"] }
 criterion = { workspace = true }
 
 [features]
-default = ["std"]
+default = ["std", "parallel"]
 serde = ["dep:serde"]
 std = [
     "ark-std/std",
@@ -41,4 +41,13 @@ std = [
     "ark-bn254/std",
     "ark-grumpkin/std",
     "ark-poly/std",
+]
+# Rayon-parallel MSMs and FFTs. Requires `std`. Off by default on no_std
+# targets (Solana BPF, WASM without threads).
+parallel = [
+    "std",
+    "ark-std/parallel",
+    "ark-ff/parallel",
+    "ark-ec/parallel",
+    "ark-poly/parallel",
 ]
