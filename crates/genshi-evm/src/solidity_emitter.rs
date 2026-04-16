@@ -39,11 +39,11 @@
 
 use core::fmt::Write;
 
-use ark_bn254::{Fr, G1Affine, G2Affine};
 use ark_ec::AffineRepr;
 use ark_ff::{BigInteger, PrimeField};
+use genshi_math::{Fr, G1Affine, G2Affine};
 
-use genshi_core::proving::prover::VerificationKey;
+use genshi_core::proving::types::VerificationKey;
 use genshi_core::proving::srs::SRS;
 
 // ===========================================================================
@@ -99,11 +99,12 @@ impl EmitterOptions {
 
 /// Format a G1Affine point as two Solidity uint256 hex literals (x, y).
 fn g1_to_hex(point: &G1Affine) -> (String, String) {
-    if point.is_zero() {
+    let ark = point.to_ark();
+    if ark.is_zero() {
         return ("0".into(), "0".into());
     }
-    let x: ark_bn254::Fq = point.x().unwrap();
-    let y: ark_bn254::Fq = point.y().unwrap();
+    let x: ark_bn254::Fq = ark.x().unwrap();
+    let y: ark_bn254::Fq = ark.y().unwrap();
     (
         format!("0x{}", hex::encode(&x.into_bigint().to_bytes_be())),
         format!("0x{}", hex::encode(&y.into_bigint().to_bytes_be())),
@@ -112,11 +113,12 @@ fn g1_to_hex(point: &G1Affine) -> (String, String) {
 
 /// Format a G2Affine point as four uint256 hex literals (EIP-197 order).
 fn g2_to_hex(point: &G2Affine) -> (String, String, String, String) {
-    if point.is_zero() {
+    let ark = point.to_ark();
+    if ark.is_zero() {
         return ("0".into(), "0".into(), "0".into(), "0".into());
     }
-    let x = point.x().unwrap();
-    let y = point.y().unwrap();
+    let x = ark.x().unwrap();
+    let y = ark.y().unwrap();
     (
         format!("0x{}", hex::encode(&x.c1.into_bigint().to_bytes_be())),
         format!("0x{}", hex::encode(&x.c0.into_bigint().to_bytes_be())),
@@ -126,7 +128,7 @@ fn g2_to_hex(point: &G2Affine) -> (String, String, String, String) {
 }
 
 fn fr_to_hex(scalar: &Fr) -> String {
-    format!("0x{}", hex::encode(&scalar.into_bigint().to_bytes_be()))
+    format!("0x{}", hex::encode(&scalar.to_be_bytes()))
 }
 
 mod hex {
@@ -925,7 +927,7 @@ fn emit_verify_entrypoint(out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::Fr;
+    use ark_bn254::Fr as ArkFr;
     use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
     use genshi_core::proving::prover;
     use genshi_core::proving::srs::SRS;
@@ -933,8 +935,8 @@ mod tests {
     fn small_vk() -> (VerificationKey, SRS) {
         let srs = SRS::insecure_for_testing(128);
         let mut builder = UltraCircuitBuilder::new();
-        let a = builder.add_variable(Fr::from(3u64));
-        let b = builder.add_variable(Fr::from(5u64));
+        let a = builder.add_variable(ArkFr::from(3u64));
+        let b = builder.add_variable(ArkFr::from(5u64));
         let c = builder.add(a, b);
         builder.set_public(c);
         let (_, vk) = prover::prove(&builder, &srs);
@@ -1047,13 +1049,14 @@ mod tests {
         // Build a small public-input circuit and prove it.
         let srs = SRS::insecure_for_testing(128);
         let mut b = UltraCircuitBuilder::new();
-        let a = b.add_variable(Fr::from(3u64));
-        let c = b.add_variable(Fr::from(5u64));
+        let a = b.add_variable(ArkFr::from(3u64));
+        let c = b.add_variable(ArkFr::from(5u64));
         let s = b.add(a, c);
         b.set_public(s);
 
         let (proof, vk) = prover::prove(&b, &srs);
         let pis = [Fr::from(8u64)];
+        let pis_ark = [ArkFr::from(8u64)];
 
         // Sanity: the Rust verifier agrees before we ship bytes to Solidity.
         assert!(
@@ -1074,7 +1077,7 @@ mod tests {
 
         // Public inputs as decimal strings (one per line) — easiest thing to
         // ingest from a forge test via `vm.readLine`.
-        let pi_lines: Vec<String> = pis.iter().map(|x| format!("{x}")).collect();
+        let pi_lines: Vec<String> = pis_ark.iter().map(|x| format!("{x}")).collect();
         fs::write(
             "/tmp/genshi_fcheck/testdata/pi.txt",
             pi_lines.join("\n"),
