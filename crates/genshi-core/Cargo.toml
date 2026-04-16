@@ -13,6 +13,9 @@ keywords = ["zero-knowledge", "cryptography", "plonk", "snark", "zkp"]
 categories = ["cryptography", "no-std"]
 
 [dependencies]
+# Backend-agnostic field/curve/pairing surface used by the verifier. Native
+# feature (arkworks) is the default; emitted BPF programs flip this to `bpf`.
+genshi-math = { workspace = true }
 ark-bn254 = { workspace = true }
 ark-grumpkin = { workspace = true }
 ark-ff = { workspace = true }
@@ -31,8 +34,16 @@ ark-std = { version = "0.5", features = ["std"] }
 criterion = { workspace = true }
 
 [features]
-default = ["std", "parallel"]
+default = ["std", "parallel", "prover", "math-native"]
 serde = ["dep:serde"]
+# Enables proof generation: arithmetization, gadgets, and the prover module.
+# Off on Solana BPF where only the verifier is needed — strips ~70% of code.
+prover = []
+# Select the genshi-math backend. Exactly one of `math-native` / `math-bpf`
+# must be on. `math-native` routes through arkworks (host + WASM); `math-bpf`
+# routes through Solana syscalls + hand-rolled Fr (emitted Anchor programs).
+math-native = ["genshi-math/native"]
+math-bpf = ["genshi-math/bpf"]
 std = [
     "ark-std/std",
     "ark-ff/std",
