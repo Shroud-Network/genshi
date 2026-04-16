@@ -33,8 +33,21 @@ pub mod arithmetization;
 pub mod gadgets;
 pub mod proving;
 pub mod circuit;
+pub mod note;
+pub mod witness;
 
 pub use circuit::Circuit;
+pub use note::{grumpkin_scalar_to_fr, Note};
+
+// Re-export the arkworks crates genshi-core depends on, so downstream
+// application crates can write `use genshi_core::ark_ec::AffineRepr;` without
+// adding their own `ark-ec` / `ark-grumpkin` / `ark-bn254` / `ark-ff`
+// dependencies. This keeps scaffolded `Cargo.toml` minimal and prevents
+// accidental version drift between the framework and its consumers.
+pub use ark_bn254;
+pub use ark_ec;
+pub use ark_ff;
+pub use ark_grumpkin;
 
 /// Build a proof for a [`Circuit`] using the supplied SRS.
 ///

@@ -1328,8 +1328,25 @@ description = "genshi ZK application scaffolded by `genshi new`"
 # linker section that `src/bin/genshi.rs` pulls in via `use {{name}} as _;`.
 {{deps}}
 
-ark-bn254 = { version = "0.5", default-features = false }
-serde = { version = "1", features = ["derive"] }
+# Arkworks primitives. These are also re-exported from `genshi_core` (e.g.
+# `genshi_core::ark_ec::AffineRepr`), so you can drop these direct deps if you
+# prefer to route every import through the framework.
+ark-bn254    = { version = "0.5", default-features = false }
+ark-ec       = { version = "0.5", default-features = false }
+ark-ff       = { version = "0.5", default-features = false }
+ark-grumpkin = { version = "0.5", default-features = false }
+
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["std"]
+std = [
+    "ark-bn254/std",
+    "ark-ec/std",
+    "ark-ff/std",
+    "ark-grumpkin/std",
+]
 "#;
 
 const SCAFFOLD_LIB_RS: &str = r#"//! A genshi application scaffolded by `genshi new`.
