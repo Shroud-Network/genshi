@@ -146,4 +146,4 @@ pub mod bpf;
 pub use native::{Fr, G1Affine, G1Projective, G2Affine, pairing_check};
 
 #[cfg(feature = "bpf")]
-pub use bpf::{Fr, G1Affine, G1Projective, G2Affine, pairing_check};
+pub use bpf::{Fr, G1Affine, G1Projective, G2Affine, G2Projective, pairing_check};
