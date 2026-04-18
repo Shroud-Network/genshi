@@ -140,6 +140,35 @@ impl Fr {
         }
         Some(self.pow(&P_MINUS_2))
     }
+
+    pub fn from_be_bytes_canonical(bytes: &[u8; 32]) -> Option<Self> {
+        let mut limbs = [0u64; 4];
+        limbs[3] = u64::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]);
+        limbs[2] = u64::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]]);
+        limbs[1] = u64::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23]]);
+        limbs[0] = u64::from_be_bytes([bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30], bytes[31]]);
+
+        if !lt(&limbs, &MODULUS) {
+            return None;
+        }
+        Some(Self(mont_mul(&limbs, &R2)))
+    }
+
+    #[cfg(any(feature = "native", feature = "host-test"))]
+    pub fn from_ark(ark_fr: ark_bn254::Fr) -> Self {
+        use ark_ff::{BigInteger, PrimeField};
+        let be_bytes = ark_fr.into_bigint().to_bytes_be();
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&be_bytes);
+        Self::from_be_bytes_mod_order(&arr)
+    }
+
+    #[cfg(any(feature = "native", feature = "host-test"))]
+    pub fn to_ark(self) -> ark_bn254::Fr {
+        use ark_ff::PrimeField;
+        let be = self.to_be_bytes();
+        ark_bn254::Fr::from_be_bytes_mod_order(&be)
+    }
 }
 
 /// p - 2 (for Fermat inversion), little-endian limbs.
