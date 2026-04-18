@@ -19,8 +19,15 @@ ark-ec = { workspace = true, optional = true }
 ark-ff = { workspace = true, optional = true }
 ark-serialize = { workspace = true, optional = true }
 
+# BPF backend: syscalls live in solana-program.
+solana-program = { version = "2.2", optional = true }
+
 [dev-dependencies]
 rand = { workspace = true }
+ark-bn254 = { version = "0.5", features = ["curve", "std"] }
+ark-ec = { version = "0.5" }
+ark-ff = { version = "0.5" }
+ark-serialize = { version = "0.5" }
 
 [features]
 # One of { native, bpf } must be enabled. They are mutually exclusive.
@@ -38,4 +45,4 @@ native = [
     "ark-ff/std",
     "ark-serialize/std",
 ]
-bpf = []
+bpf = ["dep:solana-program"]
