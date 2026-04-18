@@ -1,3 +1,4 @@
+
 //! BPF pairing check via `sol_alt_bn128_pairing`.
 //!
 //! The verifier calls `pairing_check(a1, b1, a2, b2)` which returns true iff
@@ -20,15 +21,12 @@ pub fn pairing_check(a1: G1Affine, b1: G2Affine, a2: G1Affine, b2: G2Affine) -> 
 #[cfg(target_os = "solana")]
 fn pairing_check_raw(input: &[u8; 384]) -> bool {
     let mut output = [0u8; 32];
-    unsafe {
-        solana_program::alt_bn128::prelude::alt_bn128_pairing(input, &mut output)
-            .expect("sol_alt_bn128_pairing failed");
-    }
-    // Output is 32 bytes: 1 if pairing check passed, 0 otherwise
+    solana_bn254::prelude::alt_bn128_pairing(input, &mut output)
+        .expect("sol_alt_bn128_pairing failed");
     output[31] == 1 && output[..31].iter().all(|&b| b == 0)
 }
 
-#[cfg(not(target_os = "solana"))]
+#[cfg(all(not(target_os = "solana"), any(feature = "native", feature = "host-test")))]
 fn pairing_check_raw(input: &[u8; 384]) -> bool {
     use ark_bn254::{Bn254, Fq, Fq2, G1Affine as ArkG1, G2Affine as ArkG2};
     use ark_ec::{pairing::Pairing, AffineRepr};
@@ -62,6 +60,11 @@ fn pairing_check_raw(input: &[u8; 384]) -> bool {
     let lhs = Bn254::pairing(a1, b1);
     let rhs = Bn254::pairing(a2, b2);
     (lhs + rhs).is_zero()
+}
+
+#[cfg(all(not(target_os = "solana"), not(any(feature = "native", feature = "host-test"))))]
+fn pairing_check_raw(_input: &[u8; 384]) -> bool {
+    unimplemented!("BPF pairing requires Solana target or host-test feature")
 }
 
 #[cfg(test)]
