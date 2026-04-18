@@ -249,6 +249,20 @@ impl G2Affine {
         G2Projective(self.0.into_group())
     }
 
+    pub fn to_uncompressed_bytes(&self) -> [u8; 128] {
+        use ark_ff::BigInteger;
+        let mut out = [0u8; 128];
+        if !self.0.is_zero() {
+            let x = self.0.x().expect("non-identity G2 has x");
+            let y = self.0.y().expect("non-identity G2 has y");
+            out[0..32].copy_from_slice(&x.c1.into_bigint().to_bytes_be());
+            out[32..64].copy_from_slice(&x.c0.into_bigint().to_bytes_be());
+            out[64..96].copy_from_slice(&y.c1.into_bigint().to_bytes_be());
+            out[96..128].copy_from_slice(&y.c0.into_bigint().to_bytes_be());
+        }
+        out
+    }
+
     pub fn serialized_size() -> usize {
         ArkG2Affine::generator()
             .serialized_size(ark_serialize::Compress::No)
