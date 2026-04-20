@@ -166,10 +166,10 @@ pub fn verify(
         nu_pow *= nu;
     }
 
-    let selector_comms = [
+    let selector_comms = alloc::boxed::Box::new([
         vk.q_m_comm, vk.q_1_comm, vk.q_2_comm, vk.q_3_comm,
         vk.q_4_comm, vk.q_c_comm, vk.q_arith_comm,
-    ];
+    ]);
     for i in 0..7 {
         f += selector_comms[i].into_group() * nu_pow;
         v += proof.selector_evals[i] * nu_pow;
@@ -323,10 +323,10 @@ pub fn verify_prepare(
         v += proof.sigma_evals[i] * nu_pow;
         nu_pow *= nu;
     }
-    let selector_comms = [
+    let selector_comms = alloc::boxed::Box::new([
         vk.q_m_comm, vk.q_1_comm, vk.q_2_comm, vk.q_3_comm,
         vk.q_4_comm, vk.q_c_comm, vk.q_arith_comm,
-    ];
+    ]);
     for i in 0..7 {
         f += selector_comms[i].into_group() * nu_pow;
         v += proof.selector_evals[i] * nu_pow;
