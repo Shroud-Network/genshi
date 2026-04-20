@@ -408,9 +408,10 @@ fn g1_add(a: &[u8; 64], b: &[u8; 64]) -> [u8; 64] {
     let mut input = [0u8; 128];
     input[..64].copy_from_slice(a);
     input[64..].copy_from_slice(b);
-    let mut output = [0u8; 64];
-    solana_bn254::prelude::alt_bn128_addition(&input, &mut output)
+    let result = solana_bn254::prelude::alt_bn128_addition(&input)
         .expect("sol_alt_bn128_addition failed");
+    let mut output = [0u8; 64];
+    output.copy_from_slice(&result[..64]);
     output
 }
 
@@ -419,9 +420,10 @@ fn g1_scalar_mul(point: &[u8; 64], scalar_be: &[u8; 32]) -> [u8; 64] {
     let mut input = [0u8; 96];
     input[..64].copy_from_slice(point);
     input[64..].copy_from_slice(scalar_be);
-    let mut output = [0u8; 64];
-    solana_bn254::prelude::alt_bn128_multiplication(&input, &mut output)
+    let result = solana_bn254::prelude::alt_bn128_multiplication(&input)
         .expect("sol_alt_bn128_multiplication failed");
+    let mut output = [0u8; 64];
+    output.copy_from_slice(&result[..64]);
     output
 }
 
