@@ -37,5 +37,8 @@ math-bpf = ["genshi-math/bpf"]
 # `target_os = "solana"` is only defined when rustc is driven by the Solana
 # BPF backend. Tell host rustc that the cfg is recognized so the
 # `unexpected_cfgs` lint stays quiet on normal cargo builds.
+[dev-dependencies]
+genshi-core = { path = "../genshi-core", version = "0.2.0", features = ["prover"] }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
