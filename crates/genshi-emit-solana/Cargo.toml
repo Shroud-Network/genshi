@@ -1,0 +1,21 @@
+[package]
+name = "genshi-emit-solana"
+description = "Anchor program codegen for genshi PLONK-KZG verifiers on Solana (per-VK, zero runtime dependency)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["zero-knowledge", "solana", "anchor", "plonk", "verifier"]
+categories = ["cryptography"]
+
+[dependencies]
+genshi-core = { workspace = true }
+genshi-math = { workspace = true }
+ark-bn254 = { workspace = true }
+ark-ff = { workspace = true }
+ark-ec = { workspace = true }
+ark-serialize = { workspace = true }
