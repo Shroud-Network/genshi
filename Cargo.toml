@@ -4,6 +4,7 @@
 [workspace]
 members = [
     "crates/genshi-core",
+    "crates/genshi-emit-solana",
     "crates/genshi-evm",
     "crates/genshi-math",
     "crates/genshi-solana",
