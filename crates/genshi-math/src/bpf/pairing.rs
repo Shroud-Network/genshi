@@ -20,10 +20,9 @@ pub fn pairing_check(a1: G1Affine, b1: G2Affine, a2: G1Affine, b2: G2Affine) -> 
 
 #[cfg(target_os = "solana")]
 fn pairing_check_raw(input: &[u8; 384]) -> bool {
-    let mut output = [0u8; 32];
-    solana_bn254::prelude::alt_bn128_pairing(input, &mut output)
+    let result = solana_bn254::prelude::alt_bn128_pairing(input)
         .expect("sol_alt_bn128_pairing failed");
-    output[31] == 1 && output[..31].iter().all(|&b| b == 0)
+    result[31] == 1 && result[..31].iter().all(|&b| b == 0)
 }
 
 #[cfg(all(not(target_os = "solana"), any(feature = "native", feature = "host-test")))]
