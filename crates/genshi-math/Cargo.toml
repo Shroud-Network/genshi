@@ -19,8 +19,8 @@ ark-ec = { workspace = true, optional = true }
 ark-ff = { workspace = true, optional = true }
 ark-serialize = { workspace = true, optional = true }
 
-# BPF backend: syscalls live in solana-program.
-solana-program = { version = "2.2", optional = true }
+# BPF backend: BN254 syscalls extracted from solana-program into solana-bn254.
+solana-bn254 = { version = "2.2", optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }
@@ -45,4 +45,23 @@ native = [
     "ark-ff/std",
     "ark-serialize/std",
 ]
-bpf = ["dep:solana-program"]
+bpf = ["dep:solana-bn254"]
+# Enables arkworks alongside the BPF backend for host-side testing. This
+# provides `from_ark` conversion methods on BPF types and arkworks-backed
+# fallbacks for syscall operations (G1 add, scalar mul, pairing). Only
+# meaningful when combined with `bpf`; on real Solana BPF targets the
+# syscall paths are used instead.
+host-test = [
+    "dep:ark-bn254",
+    "dep:ark-ec",
+    "dep:ark-ff",
+    "dep:ark-serialize",
+    "ark-bn254/curve",
+    "ark-bn254/std",
+    "ark-ec/std",
+    "ark-ff/std",
+    "ark-serialize/std",
+]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
