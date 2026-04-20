@@ -41,7 +41,7 @@ impl SRS {
     ///
     /// # Arguments
     /// * `max_degree` - Maximum polynomial degree supported (number of G1 points = max_degree + 1)
-    #[cfg(feature = "math-native")]
+    #[cfg(any(feature = "math-native", feature = "math-bpf-host"))]
     pub fn insecure_for_testing(max_degree: usize) -> Self {
         use ark_bn254::{Fr as ArkFr, G1Affine as ArkG1Affine, G2Affine as ArkG2Affine};
         use ark_ec::{AffineRepr, CurveGroup};
@@ -107,7 +107,7 @@ impl SRS {
     /// - `g1_powers`: num_g1_points × uncompressed G1 size
     /// - `g2`: uncompressed G2 size
     /// - `g2_tau`: uncompressed G2 size
-    #[cfg(feature = "math-native")]
+    #[cfg(any(feature = "math-native", feature = "math-bpf-host"))]
     pub fn save_to_bytes(&self) -> Vec<u8> {
         let g1_size = G1Affine::serialized_size();
         let g2_size = G2Affine::serialized_size();
