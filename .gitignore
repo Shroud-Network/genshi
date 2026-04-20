@@ -25,3 +25,4 @@ Cargo.lock
 zkApp
 shroud-pool
 solana
+solana-verifier
