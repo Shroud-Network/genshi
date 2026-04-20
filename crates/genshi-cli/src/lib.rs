@@ -515,6 +515,26 @@ enum Commands {
         output: PathBuf,
     },
 
+    /// Emit a self-contained Anchor program for Solana proof verification.
+    ///
+    /// Reads one or more serialized VK files and emits a complete Anchor
+    /// program that verifies proofs on-chain using `sol_alt_bn128_*` syscalls.
+    /// The emitted program has zero runtime dependency on `genshi-core`.
+    EmitSolana {
+        /// Comma-separated `name:path` pairs, e.g. `withdraw:vk_withdraw.bin,transfer:vk_transfer.bin`.
+        #[arg(long)]
+        circuits: String,
+        /// Path to a serialized SRS (only G2 pairing constants are extracted).
+        #[arg(long)]
+        srs: PathBuf,
+        /// Output directory for the emitted Anchor program.
+        #[arg(long)]
+        output: PathBuf,
+        /// Anchor program name.
+        #[arg(long, default_value = "genshi-verifier")]
+        program_name: String,
+    },
+
     /// Verify a proof natively given (proof, vk, public-inputs, srs) files.
     ///
     /// Public inputs are expected as concatenated 32-byte little-endian Fr
@@ -767,6 +787,12 @@ pub fn run() -> ExitCode {
         } => cmd_prove(&circuit, &witness, &srs, &output),
         Commands::EmitPoseidon2 { output } => cmd_emit_poseidon2(&output),
         Commands::EmitLibs { output } => cmd_emit_libs(&output),
+        Commands::EmitSolana {
+            circuits,
+            srs,
+            output,
+            program_name,
+        } => cmd_emit_solana(&circuits, &srs, &output, &program_name),
         Commands::Verify {
             proof,
             vk,
@@ -1191,6 +1217,62 @@ fn cmd_emit_libs(output_dir: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_emit_solana(
+    circuits_arg: &str,
+    srs_path: &Path,
+    output: &Path,
+    program_name: &str,
+) -> ExitCode {
+    let srs_bytes = match fs::read(srs_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("failed to read SRS: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let srs = SRS::load_from_bytes(&srs_bytes);
+
+    let mut config = genshi_emit_solana::EmitConfig::new(program_name, output);
+
+    for pair in circuits_arg.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (name, path) = match pair.split_once(':') {
+            Some((n, p)) => (n.trim(), p.trim()),
+            None => {
+                eprintln!("invalid circuit spec '{pair}' — expected name:path");
+                return ExitCode::FAILURE;
+            }
+        };
+        let vk_bytes = match fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("failed to read VK for circuit '{name}': {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        config.add_circuit(name, vk_bytes);
+    }
+
+    match genshi_emit_solana::emit_program(&config, &srs) {
+        Ok(()) => {
+            println!(
+                "emitted Anchor program '{}' with {} circuit(s) to {}",
+                program_name,
+                config.circuits.len(),
+                output.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("emit failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cmd_verify(
     proof_path: &Path,
     vk_path: &Path,
@@ -1373,6 +1455,7 @@ fn cmd_new(name: &str, parent: Option<&Path>, source_str: &str) -> ExitCode {
     let src_dir = target.join("src");
     let bin_dir = src_dir.join("bin");
     let circuits_dir = src_dir.join("circuits");
+    let scripts_dir = target.join("scripts");
     if let Err(e) = fs::create_dir_all(&bin_dir) {
         eprintln!("failed to create {}: {e}", bin_dir.display());
         return ExitCode::FAILURE;
@@ -1381,11 +1464,16 @@ fn cmd_new(name: &str, parent: Option<&Path>, source_str: &str) -> ExitCode {
         eprintln!("failed to create {}: {e}", circuits_dir.display());
         return ExitCode::FAILURE;
     }
+    if let Err(e) = fs::create_dir_all(&scripts_dir) {
+        eprintln!("failed to create {}: {e}", scripts_dir.display());
+        return ExitCode::FAILURE;
+    }
 
     let circuits_mod_rs = SCAFFOLD_CIRCUITS_MOD_RS.to_string();
     let circuits_add_rs = SCAFFOLD_CIRCUITS_ADD_RS.to_string();
+    let emit_sh = SCAFFOLD_EMIT_SH.to_string();
 
-    let files: [(PathBuf, String); 7] = [
+    let files: [(PathBuf, String); 8] = [
         (target.join("Cargo.toml"), cargo_toml),
         (target.join("README.md"), readme),
         (target.join(".gitignore"), gitignore),
@@ -1393,11 +1481,23 @@ fn cmd_new(name: &str, parent: Option<&Path>, source_str: &str) -> ExitCode {
         (bin_dir.join("genshi.rs"), bin_rs),
         (circuits_dir.join("mod.rs"), circuits_mod_rs),
         (circuits_dir.join("add.rs"), circuits_add_rs),
+        (scripts_dir.join("emit.sh"), emit_sh),
     ];
     for (path, content) in &files {
         if let Err(e) = fs::write(path, content) {
             eprintln!("failed to write {}: {e}", path.display());
             return ExitCode::FAILURE;
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let emit_path = scripts_dir.join("emit.sh");
+        if let Ok(meta) = fs::metadata(&emit_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&emit_path, perms);
         }
     }
 
@@ -1543,6 +1643,39 @@ genshi ships reusable gadgets you can compose in your circuits:
 "#;
 
 const SCAFFOLD_GITIGNORE: &str = "target/\n*.bin\n*.vk\n";
+
+const SCAFFOLD_EMIT_SH: &str = r#"#!/usr/bin/env bash
+set -euo pipefail
+
+# Emit dual-chain verifiers for all registered circuits.
+# Adjust SRS, circuit names, and output paths to suit your project.
+
+SRS="${SRS:-srs.bin}"
+CIRCUIT="${CIRCUIT:-add}"
+OUT_EVM="${OUT_EVM:-contracts}"
+OUT_SOLANA="${OUT_SOLANA:-solana-verifier}"
+
+if [ ! -f "$SRS" ]; then
+  echo "SRS not found at $SRS — generating a test SRS..."
+  cargo run --release --bin genshi -- srs new --max-degree 1024 --output "$SRS"
+fi
+
+echo "=== Extracting VK ==="
+mkdir -p out
+cargo run --release --bin genshi -- extract-vk --circuit "$CIRCUIT" --srs "$SRS" --output "out/${CIRCUIT}.vk"
+
+echo "=== Emitting EVM verifier ==="
+cargo run --release --bin genshi -- emit-evm --vk "out/${CIRCUIT}.vk" --srs "$SRS" --output "$OUT_EVM"
+
+echo "=== Emitting Solana Anchor program ==="
+cargo run --release --bin genshi -- emit-solana \
+  --circuits "${CIRCUIT}:out/${CIRCUIT}.vk" \
+  --srs "$SRS" \
+  --output "$OUT_SOLANA"
+
+echo ""
+echo "Done. EVM verifier in ${OUT_EVM}/, Solana program in ${OUT_SOLANA}/"
+"#;
 
 const SCAFFOLD_CIRCUITS_MOD_RS: &str = r#"//! Circuit modules.
 //!
@@ -1980,6 +2113,7 @@ mod tests {
         assert!(crate_dir.join("src/bin/genshi.rs").exists());
         assert!(crate_dir.join("src/circuits/mod.rs").exists());
         assert!(crate_dir.join("src/circuits/add.rs").exists());
+        assert!(crate_dir.join("scripts/emit.sh").exists());
 
         // Verify content
         let cargo_toml = std::fs::read_to_string(crate_dir.join("Cargo.toml")).unwrap();
