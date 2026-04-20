@@ -44,6 +44,9 @@ prover = []
 # routes through Solana syscalls + hand-rolled Fr (emitted Anchor programs).
 math-native = ["genshi-math/native"]
 math-bpf = ["genshi-math/bpf"]
+# BPF math on host: for testing the verifier against BPF types without a
+# real Solana target. Enables arkworks fallback for curve/pairing ops.
+math-bpf-host = ["genshi-math/bpf", "genshi-math/host-test"]
 std = [
     "ark-std/std",
     "ark-ff/std",
