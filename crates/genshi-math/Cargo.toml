@@ -20,7 +20,16 @@ ark-ff = { workspace = true, optional = true }
 ark-serialize = { workspace = true, optional = true }
 
 # BPF backend: BN254 syscalls extracted from solana-program into solana-bn254.
-solana-bn254 = { version = "2.2", optional = true }
+# Pinned to a ^2 range so we accept 2.2.x on older toolchains and 3.x on Agave
+# 3.1+ clients — the `alt_bn128_{addition,multiplication,pairing}` ABI has been
+# stable across all of these.
+solana-bn254 = { version = ">=2.2,<4", optional = true }
+# Used to declare the sol_keccak256 syscall for the BPF transcript hasher.
+# `define_syscall!` macro has the same signature across 2.x through 5.x.
+solana-define-syscall = { version = ">=2.3,<6", optional = true }
+
+# Native-side Keccak for proving/WASM host verification. BPF uses sol_keccak256.
+tiny-keccak = { version = "2.0", features = ["keccak"], optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }
@@ -39,13 +48,14 @@ native = [
     "dep:ark-ec",
     "dep:ark-ff",
     "dep:ark-serialize",
+    "dep:tiny-keccak",
     "ark-bn254/curve",
     "ark-bn254/std",
     "ark-ec/std",
     "ark-ff/std",
     "ark-serialize/std",
 ]
-bpf = ["dep:solana-bn254"]
+bpf = ["dep:solana-bn254", "dep:solana-define-syscall"]
 # Enables arkworks alongside the BPF backend for host-side testing. This
 # provides `from_ark` conversion methods on BPF types and arkworks-backed
 # fallbacks for syscall operations (G1 add, scalar mul, pairing). Only
@@ -56,6 +66,7 @@ host-test = [
     "dep:ark-ec",
     "dep:ark-ff",
     "dep:ark-serialize",
+    "dep:tiny-keccak",
     "ark-bn254/curve",
     "ark-bn254/std",
     "ark-ec/std",
