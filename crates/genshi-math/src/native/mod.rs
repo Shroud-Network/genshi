@@ -6,8 +6,10 @@
 
 pub mod fr;
 pub mod curve;
+pub mod keccak;
 pub mod pairing;
 
 pub use fr::Fr;
 pub use curve::{G1Affine, G1Projective, G2Affine, G2Projective};
+pub use keccak::keccak256;
 pub use pairing::pairing_check;
