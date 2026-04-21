@@ -65,3 +65,9 @@ parallel = [
     "ark-ec/parallel",
     "ark-poly/parallel",
 ]
+
+[lints.rust]
+# `target_os = "solana"` is active when verifier.rs is vendored into an emitted
+# Anchor program and built via cargo-build-sbf. On host builds it's inactive
+# but valid — whitelist it so rustc 1.80+ doesn't warn about the `cfg_attr`s.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
