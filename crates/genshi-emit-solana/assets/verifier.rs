@@ -26,12 +26,81 @@ use super::srs::SRS;
 use super::transcript::Transcript;
 
 // ============================================================================
+// Lagrange helper
+// ============================================================================
+
+/// Compute `L₁(ζ)` and the public-input polynomial
+/// `PI(ζ) = -Σ pi_i · L_i(ζ)` in a single batched inversion.
+///
+/// Naively each Lagrange term needs its own field inversion; on BPF that costs
+/// ~250 KCU per Fermat. Montgomery's trick batches all `(num_pi)` denominators
+/// into one Fermat inversion plus a prefix-product walk, bringing the whole
+/// section to ~250 KCU + 3·n mults total.
+///
+/// We also build `omega^i` iteratively instead of via `omega.pow([i])`, trading
+/// O(i) multiplications per slot for a single multiplication per step.
+///
+/// Marked `inline(never)` on BPF so the scratch vectors live in their own
+/// stack frame — the Solana 4 KB per-frame limit punishes inlining this into
+/// the top-level verifier frame.
+#[cfg_attr(target_os = "solana", inline(never))]
+fn compute_l1_and_pi_zeta(
+    zeta: Fr,
+    zh_zeta: Fr,
+    n_fr: Fr,
+    omega: Fr,
+    public_inputs: &[Fr],
+) -> (Fr, Fr) {
+    // Slot 0 is always L₁'s denominator (also = L₀ when we have PIs, since
+    // ω^0 = 1). Additional slots are the remaining L_i denominators.
+    let k = public_inputs.len().max(1);
+
+    let mut omega_powers: alloc::vec::Vec<Fr> = alloc::vec::Vec::with_capacity(k);
+    let mut acc = Fr::one();
+    omega_powers.push(acc);
+    for _ in 1..k {
+        acc = acc * omega;
+        omega_powers.push(acc);
+    }
+
+    let mut denoms: alloc::vec::Vec<Fr> = alloc::vec::Vec::with_capacity(k);
+    for w in &omega_powers {
+        denoms.push(n_fr * (zeta - *w));
+    }
+    // Remember zero slots (ζ on the multiplicative domain) before
+    // batch_inverse leaves them at zero.
+    let zero_slots: alloc::vec::Vec<bool> = denoms.iter().map(|d| d.is_zero()).collect();
+
+    Fr::batch_inverse(&mut denoms);
+
+    // L₁(ζ): at ζ = 1, define as 1 (the indicator at the boundary row).
+    let l1_zeta = if zero_slots[0] {
+        Fr::one()
+    } else {
+        zh_zeta * denoms[0]
+    };
+
+    let mut pi_zeta = Fr::zero();
+    for (i, &pi_val) in public_inputs.iter().enumerate() {
+        if zero_slots[i] {
+            pi_zeta -= pi_val;
+        } else {
+            let li = omega_powers[i] * zh_zeta * denoms[i];
+            pi_zeta -= pi_val * li;
+        }
+    }
+
+    (l1_zeta, pi_zeta)
+}
+
+// ============================================================================
 // Verifier
 // ============================================================================
 
 /// Verify an UltraHonk proof against a verification key and public inputs.
 ///
 /// Returns `true` if the proof is valid, `false` otherwise.
+#[cfg_attr(target_os = "solana", inline(never))]
 pub fn verify(
     proof: &Proof,
     vk: &VerificationKey,
@@ -88,26 +157,10 @@ pub fn verify(
     // ================================================================
     let zeta_n = zeta.pow(&[n as u64]);
     let zh_zeta = zeta_n - Fr::one();
-
-    // Lagrange L₁(ζ)
     let n_fr = Fr::from(n as u64);
-    let l1_zeta = if (zeta - Fr::one()).is_zero() {
-        Fr::one()
-    } else {
-        zh_zeta / (n_fr * (zeta - Fr::one()))
-    };
 
-    // Public input polynomial PI(ζ) = -Σ pi_i · L_i(ζ)
-    let mut pi_zeta = Fr::zero();
-    for (i, &pi_val) in public_inputs.iter().enumerate() {
-        let omega_i = omega.pow(&[i as u64]);
-        if (zeta - omega_i).is_zero() {
-            pi_zeta -= pi_val;
-        } else {
-            let li = omega_i * zh_zeta / (n_fr * (zeta - omega_i));
-            pi_zeta -= pi_val * li;
-        }
-    }
+    let (l1_zeta, pi_zeta) =
+        compute_l1_and_pi_zeta(zeta, zh_zeta, n_fr, omega, public_inputs);
 
     let w1 = proof.w_evals[0];
     let w2 = proof.w_evals[1];
@@ -179,29 +232,32 @@ pub fn verify(
     f += proof.z_comm.into_group() * nu_pow;
     v += proof.z_eval * nu_pow;
 
-    // Batch pairing: e(F - v·G₁, G₂) · e(-W_ζ, τ·G₂ - ζ·G₂) == 1
+    // Batch pairing. Originally:
+    //   e(F - v·G₁, G₂) · e(-W_ζ, τ·G₂ - ζ·G₂) == 1
+    // Rewritten via bilinearity to push ζ from G₂ into G₁ so both G₂ terms
+    // are SRS constants (G₂ and τ·G₂). This avoids G₂ scalar multiplication,
+    // which has no Solana BPF syscall:
+    //   e(F - v·G₁ + ζ·W_ζ, G₂) · e(-W_ζ, τ·G₂) == 1
     let v_g1 = G1Affine::generator() * v;
-    let lhs_g1 = (f - v_g1).into_affine();
-
-    let zeta_g2 = srs.g2 * zeta;
-    let rhs_g2 = (srs.g2_tau.into_group() - zeta_g2).into_affine();
+    let zeta_w = proof.w_zeta.into_group() * zeta;
+    let lhs_g1 = (f - v_g1 + zeta_w).into_affine();
     let neg_w_zeta = (-proof.w_zeta.into_group()).into_affine();
 
-    if !pairing_check(lhs_g1, srs.g2, neg_w_zeta, rhs_g2) {
+    if !pairing_check(lhs_g1, srs.g2, neg_w_zeta, srs.g2_tau) {
         return false;
     }
 
     // ================================================================
     // Step 4: KZG verification of z at ζω
+    // Same ζω-into-G₁ rewrite:
+    //   e(Z_comm - z_ω·G₁ + ζω·W_ζω, G₂) · e(-W_ζω, τ·G₂) == 1
     // ================================================================
     let z_v_g1 = G1Affine::generator() * proof.z_omega_eval;
-    let z_lhs = (proof.z_comm.into_group() - z_v_g1).into_affine();
-
-    let zeta_omega_g2 = srs.g2 * zeta_omega;
-    let z_rhs_g2 = (srs.g2_tau.into_group() - zeta_omega_g2).into_affine();
+    let zeta_omega_w = proof.w_zeta_omega.into_group() * zeta_omega;
+    let z_lhs = (proof.z_comm.into_group() - z_v_g1 + zeta_omega_w).into_affine();
     let neg_w_zeta_omega = (-proof.w_zeta_omega.into_group()).into_affine();
 
-    pairing_check(z_lhs, srs.g2, neg_w_zeta_omega, z_rhs_g2)
+    pairing_check(z_lhs, srs.g2, neg_w_zeta_omega, srs.g2_tau)
 }
 
 // ============================================================================
@@ -263,22 +319,9 @@ pub fn verify_prepare(
     let zeta_n = zeta.pow(&[n as u64]);
     let zh_zeta = zeta_n - Fr::one();
     let n_fr = Fr::from(n as u64);
-    let l1_zeta = if (zeta - Fr::one()).is_zero() {
-        Fr::one()
-    } else {
-        zh_zeta / (n_fr * (zeta - Fr::one()))
-    };
 
-    let mut pi_zeta = Fr::zero();
-    for (i, &pi_val) in public_inputs.iter().enumerate() {
-        let omega_i = omega.pow(&[i as u64]);
-        if (zeta - omega_i).is_zero() {
-            pi_zeta -= pi_val;
-        } else {
-            let li = omega_i * zh_zeta / (n_fr * (zeta - omega_i));
-            pi_zeta -= pi_val * li;
-        }
-    }
+    let (l1_zeta, pi_zeta) =
+        compute_l1_and_pi_zeta(zeta, zh_zeta, n_fr, omega, public_inputs);
 
     let (w1, w2, w3, w4) = (proof.w_evals[0], proof.w_evals[1], proof.w_evals[2], proof.w_evals[3]);
     let (qm, q1, q2, q3, q4, qc, qa) = (
@@ -335,12 +378,17 @@ pub fn verify_prepare(
     f += proof.z_comm.into_group() * nu_pow;
     v += proof.z_eval * nu_pow;
 
+    // Mirror the BPF-safe pairing rewrite: push the ζ factor into the G₁
+    // side so the G₂ operands are SRS constants. See the corresponding
+    // comment in `verify`.
     let v_g1 = G1Affine::generator() * v;
-    let batch_lhs = (f - v_g1).into_affine();
+    let zeta_w = proof.w_zeta.into_group() * zeta;
+    let batch_lhs = (f - v_g1 + zeta_w).into_affine();
     let batch_neg_w = (-proof.w_zeta.into_group()).into_affine();
 
     let z_v_g1 = G1Affine::generator() * proof.z_omega_eval;
-    let z_lhs = (proof.z_comm.into_group() - z_v_g1).into_affine();
+    let zeta_omega_w = proof.w_zeta_omega.into_group() * zeta_omega;
+    let z_lhs = (proof.z_comm.into_group() - z_v_g1 + zeta_omega_w).into_affine();
     let z_neg_w = (-proof.w_zeta_omega.into_group()).into_affine();
 
     Some(VerificationIntermediates {
@@ -656,14 +704,15 @@ mod tests {
             "verify and verify_prepare must agree on validity");
 
         if let Some(inter) = intermediates {
-            let zeta_g2 = srs.g2 * inter.zeta;
-            let rhs_g2 = (srs.g2_tau.into_group() - zeta_g2).into_affine();
-            assert!(pairing_check(inter.batch_lhs, srs.g2, inter.batch_neg_w, rhs_g2),
+            // `verify_prepare` returns `batch_lhs = F - v·G₁ + ζ·W_ζ`,
+            // matching the G₂-side-simplified pairing `e(batch_lhs, G₂) ·
+            // e(-W_ζ, τ·G₂) == 1` used by the on-chain verifier.
+            assert!(pairing_check(inter.batch_lhs, srs.g2, inter.batch_neg_w, srs.g2_tau),
                 "Batch pairing from intermediates should pass");
+            let _ = inter.zeta;
+            let _ = inter.zeta_omega;
 
-            let zw_g2 = srs.g2 * inter.zeta_omega;
-            let z_rhs = (srs.g2_tau.into_group() - zw_g2).into_affine();
-            assert!(pairing_check(inter.z_lhs, srs.g2, inter.z_neg_w, z_rhs),
+            assert!(pairing_check(inter.z_lhs, srs.g2, inter.z_neg_w, srs.g2_tau),
                 "z opening pairing from intermediates should pass");
         }
     }
