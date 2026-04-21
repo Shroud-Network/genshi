@@ -139,11 +139,12 @@ fn all_bpf_frames_under_4kb() {
     for entry in FRAME_AUDIT {
         assert!(
             entry.stack_bytes < BPF_MAX_FRAME,
-            "{module}::{function} estimated at {bytes} bytes, exceeds BPF limit of {limit}",
+            "{module}::{function} estimated at {bytes} bytes, exceeds BPF limit of {limit} ({notes})",
             module = entry.module,
             function = entry.function,
             bytes = entry.stack_bytes,
             limit = BPF_MAX_FRAME,
+            notes = entry.notes,
         );
         if entry.stack_bytes > max_frame {
             max_frame = entry.stack_bytes;
