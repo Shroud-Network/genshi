@@ -533,6 +533,14 @@ enum Commands {
         /// Anchor program name.
         #[arg(long, default_value = "genshi-verifier")]
         program_name: String,
+        /// Base58 program id for `declare_id!` and `Anchor.toml`.
+        /// If omitted, the system program stub is used; replace after
+        /// the first `cargo build-sbf` produces a keypair.
+        #[arg(long)]
+        program_id: Option<String>,
+        /// Also emit an `Anchor.toml` alongside the program.
+        #[arg(long, default_value_t = false)]
+        emit_anchor_toml: bool,
     },
 
     /// Verify a proof natively given (proof, vk, public-inputs, srs) files.
@@ -792,7 +800,16 @@ pub fn run() -> ExitCode {
             srs,
             output,
             program_name,
-        } => cmd_emit_solana(&circuits, &srs, &output, &program_name),
+            program_id,
+            emit_anchor_toml,
+        } => cmd_emit_solana(
+            &circuits,
+            &srs,
+            &output,
+            &program_name,
+            program_id.as_deref(),
+            emit_anchor_toml,
+        ),
         Commands::Verify {
             proof,
             vk,
@@ -1222,6 +1239,8 @@ fn cmd_emit_solana(
     srs_path: &Path,
     output: &Path,
     program_name: &str,
+    program_id: Option<&str>,
+    emit_anchor_toml: bool,
 ) -> ExitCode {
     let srs_bytes = match fs::read(srs_path) {
         Ok(b) => b,
@@ -1233,6 +1252,10 @@ fn cmd_emit_solana(
     let srs = SRS::load_from_bytes(&srs_bytes);
 
     let mut config = genshi_emit_solana::EmitConfig::new(program_name, output);
+    if let Some(pid) = program_id {
+        config = config.with_program_id(pid);
+    }
+    config.emit_anchor_toml = emit_anchor_toml;
 
     for pair in circuits_arg.split(',') {
         let pair = pair.trim();
