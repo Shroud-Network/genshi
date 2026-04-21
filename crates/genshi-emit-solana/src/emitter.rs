@@ -180,22 +180,27 @@ pub struct SRS {
 
 fn generate_anchor_toml(config: &EmitConfig) -> String {
     let name = &config.program_name;
+    let name_under = name.replace('-', "_");
+    let pid = config.program_id.as_deref().unwrap_or("11111111111111111111111111111112");
     format!(
         r#"[toolchain]
+package_manager = "yarn"
 
 [features]
-seeds = false
+resolution = true
 skip-lint = false
 
 [programs.localnet]
-{name} = "11111111111111111111111111111112"
-
-[registry]
-url = "https://api.apr.dev"
+{name_under} = "{pid}"
 
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[hooks]
 "#
     )
 }
@@ -268,7 +273,7 @@ pub fn deserialize_public_inputs(bytes: &[u8]) -> Result<Vec<Fr>, ()> {
         let start = i * FR;
         let mut buf = [0u8; FR];
         buf.copy_from_slice(&bytes[start..start + FR]);
-        pis.push(Fr::from_be_bytes_canonical(&buf).ok_or(())?);
+        pis.push(Fr::from_le_bytes_canonical(&buf).ok_or(())?);
     }
     Ok(pis)
 }
