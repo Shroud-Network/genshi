@@ -13,7 +13,7 @@ keywords = ["zero-knowledge", "solana", "cryptography", "plonk", "verifier"]
 categories = ["cryptography", "no-std"]
 
 [dependencies]
-genshi-core = { path = "../genshi-core", version = "0.2.0", default-features = false }
+genshi-core = { path = "../genshi-core", version = "0.2.1", default-features = false }
 genshi-math = { workspace = true, default-features = false }
 ark-bn254 = { workspace = true }
 ark-ff = { workspace = true }
@@ -38,7 +38,7 @@ math-bpf = ["genshi-math/bpf"]
 # BPF backend. Tell host rustc that the cfg is recognized so the
 # `unexpected_cfgs` lint stays quiet on normal cargo builds.
 [dev-dependencies]
-genshi-core = { path = "../genshi-core", version = "0.2.0", features = ["prover"] }
+genshi-core = { path = "../genshi-core", version = "0.2.1", features = ["prover"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
