@@ -7,20 +7,22 @@
 //!
 //! # Typical usage
 //!
-//! ```ignore
-//! use genshi_core::witness::{NoteJson, MerklePathJson, fr_from_hex_pub};
+//! Hex-encoded scalars round-trip losslessly:
 //!
-//! #[derive(serde::Serialize, serde::Deserialize)]
-//! pub struct MyWitnessJson {
-//!     pub input_note: NoteJson,
-//!     pub merkle_path: MerklePathJson,
-//!     pub recipient: String,
-//! }
+//! ```
+//! use genshi_core::witness::{fr_to_hex, fr_from_hex};
+//! use ark_bn254::Fr;
+//!
+//! let val = Fr::from(12345678u64);
+//! let hex = fr_to_hex(&val);
+//! assert!(hex.starts_with("0x"));
+//! assert_eq!(fr_from_hex(&hex).unwrap(), val);
 //! ```
 //!
-//! The `NoteJson` and `MerklePathJson` types are always available; the
-//! `Serialize`/`Deserialize` derives are behind the `serde` feature so
-//! verifier-only targets (Solana BPF, embedded) don't pull serde in.
+//! App crates compose `NoteJson` and `MerklePathJson` into circuit-specific
+//! witness structs and derive `serde::{Serialize, Deserialize}` on them.
+//! The derives are behind genshi-core's `serde` feature so verifier-only
+//! targets (Solana BPF, embedded) don't pull serde in.
 
 use ark_bn254::Fr;
 use ark_ec::AffineRepr;
