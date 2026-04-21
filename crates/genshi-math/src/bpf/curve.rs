@@ -58,7 +58,6 @@ impl G1Affine {
         #[cfg(any(feature = "native", feature = "host-test"))]
         {
             use ark_bn254::{Fq, G1Affine as ArkG1};
-            use ark_ec::AffineRepr;
             use ark_ff::PrimeField;
             let x = Fq::from_be_bytes_mod_order(&bytes[0..32]);
             let y = Fq::from_be_bytes_mod_order(&bytes[32..64]);
