@@ -71,7 +71,6 @@ fn pairing_check_raw(_input: &[u8; 384]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::fr::Fr;
 
     #[test]
     fn pairing_identity() {
