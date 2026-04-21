@@ -15,7 +15,7 @@ use genshi_core::proving::srs::SRS;
 use genshi_core::proving::verifier::verify_prepare;
 use genshi_core::proving::serialization::{proof_from_bytes, vk_from_bytes};
 
-use crate::crypto::{pairing_check_2, compute_g2_rhs};
+use crate::crypto::pairing_check_2;
 
 /// Verify a proof using the prepare + pairing strategy.
 ///
@@ -33,21 +33,20 @@ pub fn verify_with_syscalls(
         None => return false, // Constraint equation failed
     };
 
-    // Step 3: Batch KZG pairing check
-    let rhs_g2 = compute_g2_rhs(&srs.g2, &srs.g2_tau, &intermediates.zeta);
+    // `verify_prepare` performs the G₂-side simplification on both openings —
+    // the ζ / ζ·ω scalars are folded into the G₁ LHS, so the pairing right-hand
+    // side is the constant `τ·G₂` for both checks. See verifier.rs:706-715.
     let batch_ok = pairing_check_2(
         &intermediates.batch_lhs, &srs.g2,
-        &intermediates.batch_neg_w, &rhs_g2,
+        &intermediates.batch_neg_w, &srs.g2_tau,
     );
     if !batch_ok {
         return false;
     }
 
-    // Step 4: z opening pairing check
-    let z_rhs_g2 = compute_g2_rhs(&srs.g2, &srs.g2_tau, &intermediates.zeta_omega);
     pairing_check_2(
         &intermediates.z_lhs, &srs.g2,
-        &intermediates.z_neg_w, &z_rhs_g2,
+        &intermediates.z_neg_w, &srs.g2_tau,
     )
 }
 
