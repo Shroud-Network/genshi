@@ -6,9 +6,7 @@ pub fn generate(config: &EmitConfig) -> String {
     let math_ver = &config.genshi_math_version;
 
     format!(
-        r#"[workspace]
-
-[package]
+        r#"[package]
 name = "{name}"
 version = "0.1.0"
 edition = "2021"
@@ -17,11 +15,6 @@ edition = "2021"
 crate-type = ["cdylib", "lib"]
 name = "{name_under}"
 
-[dependencies]
-anchor-lang = "{anchor_ver}"
-genshi-math = {{ version = "{math_ver}", default-features = false, features = ["bpf"] }}
-tiny-keccak = {{ version = "2.0", features = ["keccak"] }}
-
 [features]
 default = []
 cpi = ["no-entrypoint"]
@@ -29,9 +22,20 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "{anchor_ver}"
+genshi-math = {{ version = "{math_ver}", default-features = false, features = ["bpf"] }}
+tiny-keccak = {{ version = "2.0", features = ["keccak"] }}
 
 [profile.release]
 overflow-checks = true
+
+[lints.rust]
+unexpected_cfgs = {{ level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }}
 "#,
         name_under = name.replace('-', "_"),
     )
