@@ -100,7 +100,6 @@ fn compute_l1_and_pi_zeta(
 /// Verify an UltraHonk proof against a verification key and public inputs.
 ///
 /// Returns `true` if the proof is valid, `false` otherwise.
-#[cfg_attr(target_os = "solana", inline(never))]
 pub fn verify(
     proof: &Proof,
     vk: &VerificationKey,
