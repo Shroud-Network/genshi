@@ -30,7 +30,7 @@ impl EmitConfig {
             circuits: Vec::new(),
             anchor_version: "1.0.0".to_string(),
             solana_program_version: "3.0".to_string(),
-            genshi_math_version: "0.2.0".to_string(),
+            genshi_math_version: "0.2.1".to_string(),
             emit_anchor_toml: false,
             program_id: None,
         }
