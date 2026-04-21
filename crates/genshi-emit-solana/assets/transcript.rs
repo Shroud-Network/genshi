@@ -35,8 +35,7 @@
 //! Solana's `sol_alt_bn128_*` syscalls, so the same bytes that land in
 //! `calldata` / instruction data can be piped straight into Keccak.
 
-use genshi_math::{Fr, G1Affine};
-use tiny_keccak::{Hasher, Keccak};
+use genshi_math::{Fr, G1Affine, keccak256};
 use alloc::vec::Vec;
 
 /// Fiat-Shamir transcript using Keccak-256.
@@ -106,15 +105,19 @@ impl Transcript {
     ///
     /// Hashes the accumulated state with the squeeze label via Keccak-256,
     /// then re-seeds the state with the hash output (chaining construction).
+    ///
+    /// Routes through `genshi_math::keccak256` so the BPF backend hits the
+    /// `sol_keccak256` syscall (85 + n CU) instead of compiling `tiny-keccak`
+    /// into BPF (~8–15 KCU per permutation). Native/WASM builds still use
+    /// `tiny-keccak` under the hood; the challenge bytes are byte-identical.
     pub fn squeeze_challenge(&mut self, label: &[u8]) -> Fr {
-        self.state.extend_from_slice(b"squeeze");
-        self.state.extend_from_slice(&(label.len() as u32).to_le_bytes());
-        self.state.extend_from_slice(label);
-
-        let mut keccak = Keccak::v256();
-        keccak.update(&self.state);
-        let mut hash = [0u8; 32];
-        keccak.finalize(&mut hash);
+        let label_len_le = (label.len() as u32).to_le_bytes();
+        let hash = keccak256(&[
+            &self.state,
+            b"squeeze",
+            &label_len_le,
+            label,
+        ]);
 
         self.state.clear();
         self.state.extend_from_slice(&hash);
