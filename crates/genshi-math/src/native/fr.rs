@@ -86,6 +86,21 @@ impl Fr {
         }
     }
 
+    /// Strict canonical decode from 32 little-endian bytes.
+    ///
+    /// Returns `None` if the integer encoded in `bytes` is >= the Fr modulus.
+    /// Verifier-side counterpart of `to_le_bytes` and the CLI's
+    /// `public_inputs.bin` format (LE per-element, written by
+    /// `public_inputs_to_bytes_le`).
+    pub fn from_le_bytes_canonical(bytes: &[u8; 32]) -> Option<Self> {
+        let reduced = Self::from_le_bytes_mod_order(bytes);
+        if reduced.to_le_bytes() == *bytes {
+            Some(reduced)
+        } else {
+            None
+        }
+    }
+
     /// `self^exp`, with `exp` given as little-endian u64 limbs.
     ///
     /// Matches `ark_ff::Field::pow`'s semantics so `zeta.pow(&[n as u64])`
@@ -101,6 +116,23 @@ impl Fr {
     /// implements `inverse` via Fermat's little theorem and reuses it.
     pub fn inverse(&self) -> Option<Self> {
         <ArkFr as ark_ff::Field>::inverse(&self.0).map(Self)
+    }
+
+    /// Invert every element of `values` in place using Montgomery's trick.
+    ///
+    /// One field inversion for the whole batch; zeros are left untouched
+    /// (invariant: `values[i].is_zero()` implies `values[i]` stays zero).
+    ///
+    /// Used by the verifier to collapse 5+ Fermat-style inversions in the
+    /// public-input Lagrange loop into a single inversion — the single biggest
+    /// CU reduction on the BPF backend.
+    pub fn batch_inverse(values: &mut [Self]) {
+        use ark_ff::fields::batch_inversion;
+        let mut ark_values: Vec<ArkFr> = values.iter().map(|v| v.0).collect();
+        batch_inversion(&mut ark_values);
+        for (slot, inv) in values.iter_mut().zip(ark_values.into_iter()) {
+            slot.0 = inv;
+        }
     }
 
     /// Lift a small non-negative integer.
