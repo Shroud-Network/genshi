@@ -15,6 +15,11 @@ pub struct EmitConfig {
     pub solana_program_version: String,
     pub genshi_math_version: String,
     pub emit_anchor_toml: bool,
+    /// Base58 program id for the emitted `declare_id!`. If `None`, the system
+    /// program id (`11111111111111111111111111111112`) is used as a stub —
+    /// callers are then expected to replace it after the first `cargo
+    /// build-sbf` produces a keypair under `target/deploy/`.
+    pub program_id: Option<String>,
 }
 
 impl EmitConfig {
@@ -23,11 +28,17 @@ impl EmitConfig {
             program_name: program_name.into(),
             out_dir: out_dir.into(),
             circuits: Vec::new(),
-            anchor_version: "0.31.1".to_string(),
-            solana_program_version: "2.2".to_string(),
+            anchor_version: "1.0.0".to_string(),
+            solana_program_version: "3.0".to_string(),
             genshi_math_version: "0.2.0".to_string(),
             emit_anchor_toml: false,
+            program_id: None,
         }
+    }
+
+    pub fn with_program_id(mut self, id: impl Into<String>) -> Self {
+        self.program_id = Some(id.into());
+        self
     }
 
     pub fn add_circuit(&mut self, name: impl Into<String>, vk_bytes: Vec<u8>) -> &mut Self {
