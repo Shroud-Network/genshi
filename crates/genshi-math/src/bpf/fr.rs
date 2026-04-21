@@ -61,6 +61,7 @@ impl core::hash::Hash for Fr {
     }
 }
 
+#[allow(dead_code)] // host/emitted-code escape hatches; used by generated Anchor program, not genshi-math itself
 impl Fr {
     #[inline]
     pub fn zero() -> Self {
