@@ -400,3 +400,111 @@ fn parity_1k_from_ark_roundtrip() {
         assert_parity(ark_val, bpf_val);
     }
 }
+
+// ============================================================================
+// batch_inverse parity
+// ============================================================================
+
+#[test]
+fn parity_batch_inverse_small() {
+    // Small hand-picked inputs: singleton, pair, triple, and a common
+    // verifier-style set of 5 distinct values.
+    let seeds: &[&[u64]] = &[
+        &[7],
+        &[2, 3],
+        &[1, 2, 3],
+        &[5, 11, 17, 23, 29],
+    ];
+    for seed in seeds {
+        let mut ark_vals: Vec<ArkFr> = seed.iter().map(|&v| ArkFr::from(v)).collect();
+        let mut bpf_vals: Vec<bpf_fr::Fr> =
+            seed.iter().map(|&v| bpf_fr::Fr::from(v)).collect();
+
+        ark_ff::fields::batch_inversion(&mut ark_vals);
+        bpf_fr::Fr::batch_inverse(&mut bpf_vals);
+
+        for (a, b) in ark_vals.iter().zip(bpf_vals.iter()) {
+            assert_parity(*a, *b);
+        }
+    }
+}
+
+#[test]
+fn parity_batch_inverse_large() {
+    // 200 random nonzero inputs — matches the scale the verifier could grow
+    // to once we generalise the public-input Lagrange loop.
+    let mut rng = 0x1337_C0DE_BADDC0DEu64;
+    let mut ark_vals: Vec<ArkFr> = Vec::with_capacity(200);
+    let mut bpf_vals: Vec<bpf_fr::Fr> = Vec::with_capacity(200);
+    for _ in 0..200 {
+        let v = loop {
+            let x = xorshift(&mut rng);
+            if x != 0 {
+                break x;
+            }
+        };
+        ark_vals.push(ArkFr::from(v));
+        bpf_vals.push(bpf_fr::Fr::from(v));
+    }
+
+    ark_ff::fields::batch_inversion(&mut ark_vals);
+    bpf_fr::Fr::batch_inverse(&mut bpf_vals);
+
+    for (a, b) in ark_vals.iter().zip(bpf_vals.iter()) {
+        assert_parity(*a, *b);
+    }
+}
+
+#[test]
+fn parity_batch_inverse_with_zeros() {
+    // Zeros must pass through unchanged on both backends so callers don't
+    // have to pre-filter. Every other element is zero; the nonzero ones
+    // must still invert correctly.
+    let inputs: &[u64] = &[0, 7, 0, 42, 0, 123456, 0];
+
+    let mut ark_vals: Vec<ArkFr> = inputs.iter().map(|&v| ArkFr::from(v)).collect();
+    let mut bpf_vals: Vec<bpf_fr::Fr> =
+        inputs.iter().map(|&v| bpf_fr::Fr::from(v)).collect();
+
+    ark_ff::fields::batch_inversion(&mut ark_vals);
+    bpf_fr::Fr::batch_inverse(&mut bpf_vals);
+
+    for (a, b) in ark_vals.iter().zip(bpf_vals.iter()) {
+        assert_parity(*a, *b);
+    }
+}
+
+#[test]
+fn parity_batch_inverse_matches_individual() {
+    // Batch inverse of N elements must equal the element-wise inverse of
+    // each one. Sanity-check on top of the ark parity above.
+    let mut rng = 0xCAFE_F00D_1111_2222u64;
+    let values: Vec<u64> = (0..64)
+        .map(|_| loop {
+            let x = xorshift(&mut rng);
+            if x != 0 {
+                break x;
+            }
+        })
+        .collect();
+
+    let mut batched: Vec<bpf_fr::Fr> =
+        values.iter().map(|&v| bpf_fr::Fr::from(v)).collect();
+    bpf_fr::Fr::batch_inverse(&mut batched);
+
+    for (&v, inv) in values.iter().zip(batched.iter()) {
+        let expected = bpf_fr::Fr::from(v).inverse().unwrap();
+        assert_eq!(*inv, expected, "batch inverse disagrees with per-element");
+    }
+}
+
+#[test]
+fn parity_batch_inverse_empty() {
+    // Empty slice is a no-op on both backends.
+    let mut ark_vals: Vec<ArkFr> = Vec::new();
+    let mut bpf_vals: Vec<bpf_fr::Fr> = Vec::new();
+    ark_ff::fields::batch_inversion(&mut ark_vals);
+    bpf_fr::Fr::batch_inverse(&mut bpf_vals);
+    assert!(ark_vals.is_empty());
+    assert!(bpf_vals.is_empty());
+}
