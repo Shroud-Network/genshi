@@ -62,11 +62,12 @@ genshi is deliberately split into two independent layers:
 ┌─────────────────────────────────────────────────────────────┐
 │                  genshi Framework Layer                      │
 │                                                              │
-│  genshi-core   — constraint system, gadgets, prover, verifier│
-│  genshi-evm    — Solidity verifier + reusable contract libs  │
-│  genshi-solana — Rust BPF verifier                           │
-│  genshi-wasm   — WASM helpers for browser provers            │
-│  genshi-cli    — tooling (SRS gen, verifier emit, inspect)   │
+│  genshi-core        — constraint system, gadgets, prover, verifier│
+│  genshi-math        — dual-backend field/curve/pairing abstraction│
+│  genshi-evm         — Solidity verifier + reusable contract libs  │
+│  genshi-emit-solana — Anchor program codegen (per-VK verifier)    │
+│  genshi-wasm        — WASM helpers for browser provers            │
+│  genshi-cli         — tooling (SRS gen, verifier emit, inspect)   │
 │                                                              │
 │  Zero application-specific code. Zero references to notes,  │
 │  pools, nullifiers, bridges, or any domain concept.          │
@@ -87,7 +88,8 @@ genshi provides:
 - **Transcript.** Keccak-256 Fiat-Shamir on every side (prover, EVM verifier, Solana verifier, WASM, CLI). Native opcode on EVM, syscall-accessible on Solana.
 - **Verifier exports.**
   - **EVM**: `genshiVerifier.sol` template using BN254 precompiles (ecAdd 0x06, ecMul 0x07, ecPairing 0x08, modexp 0x05). Generated from any verification key. Target ≤500K gas per verify.
-  - **Solana**: `genshi-solana` crate compiled to BPF using `sol_alt_bn128_*` syscalls. Target ≤1.4M CU per verify.
+  - **Solana**: `genshi-emit-solana` generates a self-contained Anchor program per VK that verifies proofs via `sol_alt_bn128_*` syscalls. Zero runtime dependency on `genshi-core` — the verifier, transcript, and VK constants are emitted as Rust source. Target ≤1.4M CU per verify.
+- **Math abstraction.** `genshi-math` provides `Fr`, `G1Affine`, `G2Affine`, and `pairing_check` behind a compile-time backend switch: arkworks for native/WASM, Solana BPF syscalls for on-chain. The verifier code is written once against `genshi-math` and works on both targets.
 - **Reusable Solidity libraries.** `Poseidon2.sol`, `MerkleTree.sol`, `NullifierSet.sol`, `RootHistory.sol` — building blocks apps can import without reinventing the wheel.
 
 ### Framework invariants
@@ -162,11 +164,27 @@ impl Circuit for MyAppCircuit {
 }
 ```
 
-Then the app:
+Then the app emits dual-chain verifiers from a single VK:
 
-1. Writes its own contracts (Solidity + Anchor) that import `genshiVerifier.sol` and `genshi-solana::verify_with_syscalls`
-2. Writes its own SDK (TypeScript typically) that calls a small app-specific WASM cdylib using `genshi-wasm` helpers
-3. Ships independently of the framework, on its own release cadence
+```bash
+# Extract verification key
+genshi extract-vk --circuit my-app --srs srs.bin --output my-app.vk
+
+# Emit EVM verifier (Solidity contract)
+genshi emit-evm --vk my-app.vk --srs srs.bin --output contracts/
+
+# Emit Solana verifier (self-contained Anchor program)
+genshi emit-solana --circuits my-app:my-app.vk --srs srs.bin --output solana-verifier/
+```
+
+Both verifiers accept the same proof bytes and public inputs. The EVM verifier is a Solidity contract using precompiles; the Solana verifier is a generated Anchor program using BPF syscalls. Neither has a runtime dependency on `genshi-core`.
+
+The app then:
+
+1. Imports `genshiVerifier.sol` in its Solidity contracts
+2. Runs `anchor build` on the emitted Solana program
+3. Writes its SDK (TypeScript typically) that calls a WASM cdylib using `genshi-wasm` helpers
+4. Ships independently of the framework, on its own release cadence
 
 An app never modifies genshi. If an app needs something the framework doesn't provide, the choice is either to add it as an app-level extension or to upstream it as a framework primitive — but only if it's genuinely application-agnostic.
 
@@ -229,8 +247,10 @@ shroudZK/                          ← umbrella git repo (will split later)
 │   ├─ Technical_Spec.md           framework technical spec
 │   ├─ crates/
 │   │   ├─ genshi-core/             constraint system, gadgets, prover, verifier
+│   │   ├─ genshi-math/             dual-backend math (arkworks native / BPF syscalls)
 │   │   ├─ genshi-evm/              Solidity emitter + reusable contract libs
-│   │   ├─ genshi-solana/           Rust BPF verifier
+│   │   ├─ genshi-emit-solana/      Anchor program codegen from VKs
+│   │   ├─ genshi-solana/           (deprecated — use genshi-emit-solana)
 │   │   ├─ genshi-wasm/             WASM helpers (library crate)
 │   │   └─ genshi-cli/              framework tooling binary
 │   └─ benches/                    generic prover/verifier benchmarks
@@ -271,18 +291,20 @@ Shroud Pool will eventually move to its own repository. The workspaces are alrea
 
 Current state as of April 2026:
 
-- **Framework primitives** (Poseidon2, Pedersen, Grumpkin, UltraCircuitBuilder, KZG, prover, verifier): **complete** — 145 tests passing
-- **Verifier exports** (Solidity emitter, Solana BPF verifier): **complete** — 11 tests passing
-- **WASM SDK**: **complete** — 3 tests passing
+- **Framework primitives** (Poseidon2, Pedersen, Grumpkin, UltraCircuitBuilder, KZG, prover, verifier): **complete**
+- **Dual-backend math abstraction** (`genshi-math` — arkworks native + BPF syscall backends): **complete**
+- **EVM verifier export** (Solidity emitter + reusable libraries): **complete**
+- **Solana verifier codegen** (`genshi-emit-solana` — Anchor program generation from VKs): **complete**
+- **WASM SDK**: **complete**
+- **CLI tooling** (SRS management, dual-chain emit, circuit registry, prove/verify): **complete**
+- **Circuit trait** (`Circuit` + `ProvableCircuit` split for verifier-only builds): **complete**
 - **Keccak transcript, canonical serialization**: **complete**
-- **Crate restructure into genshi + apps split**: **in progress** (this refactor)
-- **Circuit trait for generic app authoring**: **pending**
 - **Custom Poseidon2 / elliptic / lookup gates** (performance tier 0): **pending**
-- **First app (Shroud Pool) against the new framework API**: **pending**
+- **First app (Shroud Pool) against the new framework API**: **in progress**
 - **Cross-VM bridge as second consumer**: **future**
 - **Security audit**: **future**
 
-159 tests passing across all crates before the refactor.
+438+ tests passing across all crates.
 
 ---
 
