@@ -11,9 +11,17 @@ fn main() {
     for name in &["verifier.rs", "transcript.rs", "types.rs"] {
         let src = core_proving.join(name);
         let dst = assets_dir.join(name);
-        fs::copy(&src, &dst).unwrap_or_else(|e| {
-            panic!("Failed to copy {}: {e}", src.display());
-        });
-        println!("cargo:rerun-if-changed={}", src.display());
+        if src.exists() {
+            fs::copy(&src, &dst).unwrap_or_else(|e| {
+                panic!("Failed to copy {}: {e}", src.display());
+            });
+            println!("cargo:rerun-if-changed={}", src.display());
+        } else if !dst.exists() {
+            panic!(
+                "Neither source {} nor pre-packaged asset {} exists",
+                src.display(),
+                dst.display()
+            );
+        }
     }
 }
