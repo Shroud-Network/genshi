@@ -269,6 +269,7 @@ pub fn verify(
 /// pairing via Solana syscalls manually. The v2 codegen path routes the
 /// pairing through `genshi-math::pairing_check` directly and does not need
 /// this — but we keep the helper so v1 callers don't break.
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct VerificationIntermediates {
     pub batch_lhs: G1Affine,
@@ -283,6 +284,7 @@ pub struct VerificationIntermediates {
 ///
 /// Returns `Some(intermediates)` if the constraint equation passes,
 /// `None` if the constraint equation fails.
+#[allow(dead_code)]
 pub fn verify_prepare(
     proof: &Proof,
     vk: &VerificationKey,
