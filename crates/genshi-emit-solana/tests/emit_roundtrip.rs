@@ -30,9 +30,17 @@ fn emit_creates_expected_files() {
 
     emit_program(&config, &srs).expect("emit_program failed");
 
-    let src = out_dir.join("src");
-    assert!(out_dir.join("Cargo.toml").exists());
-    assert!(out_dir.join("Xargo.toml").exists());
+    let program_dir = out_dir.join("programs").join("test-verifier");
+    let src = program_dir.join("src");
+
+    // Top-level workspace manifest.
+    let workspace_cargo = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
+    assert!(workspace_cargo.contains("[workspace]"));
+    assert!(workspace_cargo.contains("programs/*"));
+
+    // Per-program manifest lives under programs/<name>/.
+    assert!(program_dir.join("Cargo.toml").exists());
+    assert!(program_dir.join("Xargo.toml").exists());
     assert!(src.join("lib.rs").exists());
     assert!(src.join("verifier.rs").exists());
     assert!(src.join("transcript.rs").exists());
@@ -41,14 +49,21 @@ fn emit_creates_expected_files() {
     assert!(src.join("vk_constants.rs").exists());
     assert!(src.join("pairing_constants.rs").exists());
 
-    let cargo = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
+    let cargo = fs::read_to_string(program_dir.join("Cargo.toml")).unwrap();
     assert!(cargo.contains("test-verifier"));
     assert!(cargo.contains("genshi-math"));
     assert!(cargo.contains("anchor-lang"));
 
     let lib = fs::read_to_string(src.join("lib.rs")).unwrap();
-    assert!(lib.contains("verify_addition"));
+    assert!(lib.contains("verify_addition_from_buffers"));
+    assert!(lib.contains("verify_addition_and_close"));
+    assert!(lib.contains("init_and_write_buffer"));
+    assert!(lib.contains("MAX_CHUNK_SIZE"));
     assert!(lib.contains("#[program]"));
+    assert!(
+        !lib.contains("pub fn verify_addition("),
+        "inline verify_<circuit> must be removed — it's dead code past the 1232 B tx limit"
+    );
 
     let vk = fs::read_to_string(src.join("vk_constants.rs")).unwrap();
     assert!(vk.contains("load_addition_vk"));
@@ -85,11 +100,15 @@ fn emit_multi_circuit() {
 
     emit_program(&config, &srs).expect("emit_program failed");
 
-    let lib = fs::read_to_string(out_dir.join("src/lib.rs")).unwrap();
-    assert!(lib.contains("verify_withdraw"));
-    assert!(lib.contains("verify_transfer"));
+    let src_dir = out_dir.join("programs").join("multi-verifier").join("src");
 
-    let vk = fs::read_to_string(out_dir.join("src/vk_constants.rs")).unwrap();
+    let lib = fs::read_to_string(src_dir.join("lib.rs")).unwrap();
+    assert!(lib.contains("verify_withdraw_from_buffers"));
+    assert!(lib.contains("verify_transfer_from_buffers"));
+    assert!(lib.contains("verify_withdraw_and_close"));
+    assert!(lib.contains("verify_transfer_and_close"));
+
+    let vk = fs::read_to_string(src_dir.join("vk_constants.rs")).unwrap();
     assert!(vk.contains("load_withdraw_vk"));
     assert!(vk.contains("load_transfer_vk"));
 
