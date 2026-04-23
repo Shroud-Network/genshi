@@ -355,13 +355,20 @@ enum Commands {
         /// current working directory.
         #[arg(long)]
         path: Option<PathBuf>,
-        /// Dependency source for the generated crate. Accepts either
-        /// `git` (the default — pulls `genshi-core` / `genshi-cli` from the
-        /// upstream GitHub repo) or `path:<abs-dir>`, where `<abs-dir>` is
-        /// the workspace root of a local genshi checkout (the directory
-        /// containing `crates/genshi-cli`). Path mode is primarily useful
-        /// for developing genshi itself.
-        #[arg(long, default_value = "git")]
+        /// Dependency source for the generated crate. Accepts:
+        ///
+        /// - `crates-io` (the default) — pins `genshi-core` / `genshi-cli`
+        ///   to the published version of `genshi-cli` that scaffolded the
+        ///   project. This is what users who ran `cargo install genshi-cli`
+        ///   want — it produces a project that builds reproducibly from
+        ///   the crates.io registry.
+        /// - `git` — pulls both crates from the upstream GitHub `main`
+        ///   branch. Useful if you need bleeding-edge changes that aren't
+        ///   published yet.
+        /// - `path:<abs-dir>` — uses path dependencies rooted at a local
+        ///   genshi checkout (the directory containing `crates/genshi-cli`).
+        ///   Primarily useful for developing genshi itself.
+        #[arg(long, default_value = "crates-io")]
         source: String,
     },
 
@@ -1367,6 +1374,10 @@ fn cmd_verify(
 
 /// Source to use for `genshi-core` / `genshi-cli` in a scaffolded project.
 enum DepSource {
+    /// Pull both crates from crates.io pinned to the version of `genshi-cli`
+    /// that is currently running (i.e. `env!("CARGO_PKG_VERSION")`). This is
+    /// the default for users who installed `genshi-cli` via `cargo install`.
+    CratesIo,
     /// Pull both crates from the upstream GitHub repo.
     Git,
     /// Pull both crates as path dependencies rooted at the given directory
@@ -1376,6 +1387,9 @@ enum DepSource {
 }
 
 fn parse_source(s: &str) -> Result<DepSource, String> {
+    if s == "crates-io" || s == "crates_io" {
+        return Ok(DepSource::CratesIo);
+    }
     if s == "git" {
         return Ok(DepSource::Git);
     }
@@ -1386,7 +1400,7 @@ fn parse_source(s: &str) -> Result<DepSource, String> {
         return Ok(DepSource::Path(PathBuf::from(p)));
     }
     Err(format!(
-        "unknown source `{s}`; expected `git` or `path:<abs-dir>`"
+        "unknown source `{s}`; expected `crates-io`, `git`, or `path:<abs-dir>`"
     ))
 }
 
@@ -1445,7 +1459,19 @@ fn cmd_new(name: &str, parent: Option<&Path>, source_str: &str) -> ExitCode {
     let crate_ident = name.replace('-', "_");
 
     // Render the deps block from the chosen source.
+    //
+    // For crates.io mode, pin both `genshi-core` and `genshi-cli` to the
+    // same version as the scaffolder itself — that is `env!("CARGO_PKG_VERSION")`
+    // at build time. This guarantees a user who ran `cargo install genshi-cli`
+    // gets a project whose runtime framework matches the CLI they invoked.
     let deps_block = match &source {
+        DepSource::CratesIo => {
+            let ver = env!("CARGO_PKG_VERSION");
+            format!(
+                "genshi-core = {{ version = \"{ver}\", features = [\"serde\"] }}\n\
+                 genshi-cli  = {{ version = \"{ver}\" }}"
+            )
+        }
         DepSource::Git => String::from(
             "genshi-core = { git = \"https://github.com/shroud-network/genshi\", features = [\"serde\"] }\n\
              genshi-cli  = { git = \"https://github.com/shroud-network/genshi\" }",
@@ -1494,16 +1520,20 @@ fn cmd_new(name: &str, parent: Option<&Path>, source_str: &str) -> ExitCode {
 
     let circuits_mod_rs = SCAFFOLD_CIRCUITS_MOD_RS.to_string();
     let circuits_add_rs = SCAFFOLD_CIRCUITS_ADD_RS.to_string();
+    let circuits_hash_preimage_rs = SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS.to_string();
+    let witness_rs = SCAFFOLD_WITNESS_RS.to_string();
     let emit_sh = SCAFFOLD_EMIT_SH.to_string();
 
-    let files: [(PathBuf, String); 8] = [
+    let files: [(PathBuf, String); 10] = [
         (target.join("Cargo.toml"), cargo_toml),
         (target.join("README.md"), readme),
         (target.join(".gitignore"), gitignore),
         (src_dir.join("lib.rs"), lib_rs),
+        (src_dir.join("witness.rs"), witness_rs),
         (bin_dir.join("genshi.rs"), bin_rs),
         (circuits_dir.join("mod.rs"), circuits_mod_rs),
         (circuits_dir.join("add.rs"), circuits_add_rs),
+        (circuits_dir.join("hash_preimage.rs"), circuits_hash_preimage_rs),
         (scripts_dir.join("emit.sh"), emit_sh),
     ];
     for (path, content) in &files {
@@ -1564,10 +1594,14 @@ description = "genshi ZK application scaffolded by `genshi new`"
 # Arkworks primitives. These are also re-exported from `genshi_core` (e.g.
 # `genshi_core::ark_ec::AffineRepr`), so you can drop these direct deps if you
 # prefer to route every import through the framework.
-ark-bn254    = { version = "0.5", default-features = false }
-ark-ec       = { version = "0.5", default-features = false }
-ark-ff       = { version = "0.5", default-features = false }
-ark-grumpkin = { version = "0.5", default-features = false }
+ark-bn254     = { version = "0.5", default-features = false }
+ark-ec        = { version = "0.5", default-features = false }
+ark-ff        = { version = "0.5", default-features = false }
+ark-grumpkin  = { version = "0.5", default-features = false }
+# `ark-serialize` is needed by JSON-proxy witness types that wrap arkworks
+# `Fr` / `G1Affine` / `G2Affine` for serde (arkworks types don't derive
+# serde directly). Kept `default-features = false` so no_std builds work.
+ark-serialize = { version = "0.5", default-features = false, features = ["derive"] }
 
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -1579,6 +1613,8 @@ std = [
     "ark-ec/std",
     "ark-ff/std",
     "ark-grumpkin/std",
+    "ark-serialize/std",
+    "genshi-core/std",
 ]
 "#;
 
@@ -1590,17 +1626,26 @@ const SCAFFOLD_LIB_RS: &str = r#"//! A genshi application scaffolded by `genshi 
 //! src/
 //! ├── lib.rs              ← you are here (crate root)
 //! ├── bin/genshi.rs       ← CLI shim (do not edit)
+//! ├── witness.rs          ← JSON-proxy witness types (std only)
 //! └── circuits/
-//!     ├── mod.rs           ← register circuit modules here
-//!     └── add.rs           ← example circuit (replace with your own)
+//!     ├── mod.rs             ← register circuit modules here
+//!     ├── add.rs             ← simple POD-witness example (Form 1 register!)
+//!     └── hash_preimage.rs   ← arkworks-witness example (Form 2 register!)
 //! ```
 //!
 //! Add new circuits in `src/circuits/`. Each circuit file should:
 //! 1. `impl Circuit for MyCircuit`
-//! 2. Call `genshi_cli::register!(MyCircuit, "name")` next to the impl
-//! 3. Be declared as `pub mod my_circuit;` in `src/circuits/mod.rs`
+//! 2. `impl ProvableCircuit for MyCircuit`
+//! 3. Call `genshi_cli::register!(...)` — see the two example circuits for
+//!    the two forms: Form 1 for POD witnesses that derive serde, Form 2 for
+//!    witnesses containing arkworks types (`Fr`, `G1Affine`, `MerklePath`,
+//!    `Note`) that need a JSON-proxy wrapper in `src/witness.rs`.
+//! 4. Be declared as `pub mod my_circuit;` in `src/circuits/mod.rs`
 
 pub mod circuits;
+
+#[cfg(feature = "std")]
+pub mod witness;
 "#;
 
 const SCAFFOLD_BIN_RS: &str = r#"//! Entry point for this crate's `genshi` binary.
@@ -1639,20 +1684,58 @@ cargo run --bin genshi -- verify --proof out/proof.bin --vk out/vk.bin --public-
 
 ```
 src/
-├── lib.rs              # crate root
-├── bin/genshi.rs       # CLI shim (do not edit)
+├── lib.rs                        # crate root
+├── witness.rs                    # JSON-proxy witness types (std only)
+├── bin/genshi.rs                 # CLI shim (do not edit)
 └── circuits/
-    ├── mod.rs          # register circuit modules here
-    └── add.rs          # example circuit (replace with your own)
+    ├── mod.rs                    # register circuit modules here
+    ├── add.rs                    # Form-1 example (POD witness)
+    └── hash_preimage.rs          # Form-2 example (arkworks witness + JSON proxy)
 ```
 
 ## Adding a circuit
 
 1. Create a new file in `src/circuits/` (e.g. `my_circuit.rs`).
 2. `impl genshi_core::circuit::Circuit for MyCircuit`.
-3. Add `genshi_cli::register!(MyCircuit, "my-circuit");` next to the impl.
-4. Declare the module in `src/circuits/mod.rs`: `pub mod my_circuit;`
-5. Rebuild — the new circuit shows up in `cargo run --bin genshi -- circuits`.
+3. `impl genshi_core::circuit::ProvableCircuit for MyCircuit`.
+4. Register it with one of the two `register!` forms (see below).
+5. Declare the module in `src/circuits/mod.rs`: `pub mod my_circuit;`
+6. Rebuild — the new circuit shows up in `cargo run --bin genshi -- circuits`.
+
+### Choosing a `register!` form
+
+**Form 1 — POD witness that derives serde directly:**
+
+Use when your witness is made of plain-old-data fields (`u64`, `String`,
+`Vec<u8>`, ...). The macro handles JSON (de)serialization for you.
+
+```rust
+genshi_cli::register!(AddCircuit, "add");
+```
+
+See `src/circuits/add.rs` for the full example.
+
+**Form 2 — witness contains arkworks types:**
+
+Use when your witness contains `Fr`, `G1Affine`, `G2Affine`, `Note`,
+`MerklePath`, or any type that doesn't derive `serde::Serialize`/`Deserialize`
+directly. Define a JSON-proxy struct in `src/witness.rs` that stores each
+arkworks value as a hex string, then pass `from_json` and `to_json` closures
+to `register!`:
+
+```rust
+#[cfg(feature = "std")]
+genshi_cli::register!(
+    MyCircuit,
+    "my-circuit",
+    |json: &str| { /* parse JSON → MyWitness */ },
+    |w: &MyWitness|  { /* serialize MyWitness → JSON */ },
+);
+```
+
+See `src/circuits/hash_preimage.rs` and `src/witness.rs` for the full example.
+The helpers `fr_from_hex` / `fr_to_hex` / `NoteJson` / `MerklePathJson` in
+`crate::witness` cover most common cases.
 
 ## Framework gadgets
 
@@ -1703,10 +1786,19 @@ echo "Done. EVM verifier in ${OUT_EVM}/, Solana program in ${OUT_SOLANA}/"
 const SCAFFOLD_CIRCUITS_MOD_RS: &str = r#"//! Circuit modules.
 //!
 //! Add your circuits here. Each circuit file should define a struct that
-//! implements `genshi_core::circuit::Circuit` and register it with
-//! `genshi_cli::register!(MyCircuit, "name")`.
+//! implements `genshi_core::circuit::Circuit` and `ProvableCircuit`, then
+//! register it with `genshi_cli::register!(...)`.
+//!
+//! The two example circuits below show the two `register!` forms:
+//!
+//! - `add` — POD witness (u64 fields), `register!` Form 1 (macro derives
+//!   serde for you).
+//! - `hash_preimage` — arkworks-typed witness (`Fr`), `register!` Form 2
+//!   (you supply `from_json` and `to_json` closures that delegate to a
+//!   JSON-proxy type in `crate::witness`).
 
 pub mod add;
+pub mod hash_preimage;
 "#;
 
 const SCAFFOLD_CIRCUITS_ADD_RS: &str = r#"//! Example "a + b = c" circuit.
@@ -1756,6 +1848,137 @@ impl ProvableCircuit for AddCircuit {
 }
 
 genshi_cli::register!(AddCircuit, "add");
+"#;
+
+const SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS: &str = r#"//! Example "knowledge of Poseidon2 preimage" circuit.
+//!
+//! Proves: "I know a secret `x: Fr` such that `Poseidon2(x, 0) == commitment`"
+//! without revealing `x`. Only `commitment` is published.
+//!
+//! This is the minimal example that exercises the **Form-2 `register!`**
+//! pattern: the witness contains an arkworks `Fr`, which cannot derive
+//! `serde::Serialize` / `Deserialize` directly. Instead, we define a
+//! JSON-proxy type `HashPreimageWitnessJson` in `crate::witness` that stores
+//! `Fr` as a hex string, and we supply `from_json` / `to_json` closures to
+//! `register!` that bridge between the two.
+//!
+//! See `src/circuits/add.rs` for the simpler Form-1 pattern when your
+//! witness is a plain-old-data struct that can derive serde directly.
+//!
+//! **Public inputs:** `[commitment]` (1 Fr)
+
+use ark_bn254::Fr;
+use genshi_core::arithmetization::ultra_circuit_builder::UltraCircuitBuilder;
+use genshi_core::circuit::{Circuit, ProvableCircuit};
+use genshi_core::gadgets::poseidon2_gadget::poseidon2_hash_2_gadget;
+
+pub struct HashPreimageCircuit;
+
+/// Witness for [`HashPreimageCircuit`].
+///
+/// Contains an arkworks `Fr`, which means we can't derive `serde`. See
+/// `crate::witness::HashPreimageWitnessJson` for the serializable proxy.
+#[derive(Clone, Debug)]
+pub struct HashPreimageWitness {
+    pub secret: Fr,
+}
+
+impl Circuit for HashPreimageCircuit {
+    type PublicInputs = [Fr; 1];
+    const ID: &'static str = "example.hash_preimage";
+
+    fn num_public_inputs() -> usize {
+        1
+    }
+}
+
+impl ProvableCircuit for HashPreimageCircuit {
+    type Witness = HashPreimageWitness;
+
+    fn synthesize(
+        builder: &mut UltraCircuitBuilder,
+        w: &Self::Witness,
+    ) -> Self::PublicInputs {
+        use genshi_core::crypto::poseidon2::poseidon2_hash_2;
+
+        let secret = builder.add_variable(w.secret);
+        let zero = builder.zero_var();
+        let commitment = poseidon2_hash_2_gadget(builder, secret, zero);
+        builder.set_public(commitment);
+
+        [poseidon2_hash_2(w.secret, Fr::from(0u64))]
+    }
+
+    fn dummy_witness() -> Self::Witness {
+        HashPreimageWitness {
+            secret: Fr::from(1u64),
+        }
+    }
+}
+
+// Form-2 `register!` — supplies explicit `from_json` and `to_json` closures
+// because the witness contains arkworks `Fr` and can't derive serde.
+// See `src/witness.rs` for the JSON-proxy type.
+#[cfg(feature = "std")]
+genshi_cli::register!(
+    HashPreimageCircuit,
+    "hash-preimage",
+    |json: &str| {
+        let j: crate::witness::HashPreimageWitnessJson =
+            serde_json::from_str(json).map_err(|e| format!("{e}"))?;
+        let secret = crate::witness::fr_from_hex(&j.secret)
+            .map_err(|e| format!("{e:?}"))?;
+        Ok(HashPreimageWitness { secret })
+    },
+    |w: &HashPreimageWitness| {
+        let j = crate::witness::HashPreimageWitnessJson {
+            secret: crate::witness::fr_to_hex(&w.secret),
+        };
+        serde_json::to_string_pretty(&j).expect("witness serialization cannot fail")
+    }
+);
+
+// no_std builds can still *verify*; they just can't go from JSON → witness.
+#[cfg(not(feature = "std"))]
+genshi_cli::register!(
+    HashPreimageCircuit,
+    "hash-preimage",
+    |_json: &str| Err("prove requires the `std` feature".to_string())
+);
+"#;
+
+const SCAFFOLD_WITNESS_RS: &str = r#"//! JSON-proxy types for witnesses containing arkworks-native types.
+//!
+//! Arkworks' `Fr`, `G1Affine`, `G2Affine` don't derive `serde::Serialize`
+//! / `Deserialize`, so any circuit whose witness contains them needs a
+//! parallel struct that stores each arkworks value as a hex string. The
+//! circuit's Form-2 `register!` call bridges between the two.
+//!
+//! Helpers re-exported from `genshi_core::witness` cover most common shapes:
+//!
+//! - `fr_from_hex`, `fr_to_hex` — 32-byte `Fr` ↔ `0x…` hex
+//! - `NoteJson` — shroud-pool-style anonymous-pool notes
+//! - `MerklePathJson` — fixed-depth Poseidon2 Merkle paths
+//!
+//! Delete or extend this module to fit your own circuit witnesses. It is
+//! gated with `#[cfg(feature = "std")]` in `lib.rs` because the JSON round
+//! trip pulls in `serde_json`, which is a std-only dependency by default.
+
+// Re-exports so downstream code can `use crate::witness::fr_from_hex` etc.
+pub use genshi_core::witness::{
+    fr_from_hex, fr_from_hex_pub, fr_to_hex, MerklePathJson, NoteJson,
+};
+
+/// JSON-proxy for [`crate::circuits::hash_preimage::HashPreimageWitness`].
+///
+/// `secret` is a 32-byte big-endian `Fr` serialized as a lowercase `0x…`
+/// hex string. The hex encoding is the same one used by `fr_from_hex` /
+/// `fr_to_hex`, so JSON files produced by `genshi gen-witness` and the
+/// EVM/Solana emitters are all compatible.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct HashPreimageWitnessJson {
+    pub secret: String,
+}
 "#;
 
 // ============================================================================
@@ -2010,7 +2233,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_source_crates_io() {
+        let result = parse_source("crates-io");
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), DepSource::CratesIo));
+    }
+
+    #[test]
+    fn test_parse_source_crates_io_underscore() {
+        let result = parse_source("crates_io");
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), DepSource::CratesIo));
+    }
+
+    #[test]
     fn test_parse_source_unknown() {
+        // "crates.io" with a dot is not accepted — only "crates-io" / "crates_io"
         assert!(parse_source("crates.io").is_err());
     }
 
@@ -2105,6 +2343,60 @@ mod tests {
     }
 
     #[test]
+    fn test_scaffold_circuits_mod_declares_hash_preimage() {
+        assert!(SCAFFOLD_CIRCUITS_MOD_RS.contains("pub mod hash_preimage;"));
+    }
+
+    #[test]
+    fn test_scaffold_hash_preimage_uses_form2_register() {
+        // Form 2 register! takes explicit from_json and to_json closures —
+        // the key signal is the comma-plus-closure block after the circuit name.
+        assert!(SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS.contains("HashPreimageCircuit"));
+        assert!(SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS
+            .contains("genshi_cli::register!"));
+        assert!(SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS.contains("\"hash-preimage\""));
+        assert!(SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS.contains("|json: &str|"));
+        assert!(SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS.contains("HashPreimageWitnessJson"));
+        assert!(SCAFFOLD_CIRCUITS_HASH_PREIMAGE_RS.contains("fr_from_hex"));
+    }
+
+    #[test]
+    fn test_scaffold_witness_rs_exports_helpers() {
+        assert!(SCAFFOLD_WITNESS_RS.contains("HashPreimageWitnessJson"));
+        assert!(SCAFFOLD_WITNESS_RS.contains("fr_from_hex"));
+        assert!(SCAFFOLD_WITNESS_RS.contains("fr_to_hex"));
+        assert!(SCAFFOLD_WITNESS_RS.contains("NoteJson"));
+        assert!(SCAFFOLD_WITNESS_RS.contains("MerklePathJson"));
+    }
+
+    #[test]
+    fn test_scaffold_lib_rs_gates_witness_with_std() {
+        assert!(SCAFFOLD_LIB_RS.contains("#[cfg(feature = \"std\")]"));
+        assert!(SCAFFOLD_LIB_RS.contains("pub mod witness;"));
+    }
+
+    #[test]
+    fn test_scaffold_std_feature_propagates_genshi_core_std() {
+        assert!(SCAFFOLD_CARGO_TOML.contains("genshi-core/std"));
+        assert!(SCAFFOLD_CARGO_TOML.contains("ark-serialize/std"));
+    }
+
+    #[test]
+    fn test_scaffold_crates_io_deps_pin_current_version() {
+        let ver = env!("CARGO_PKG_VERSION");
+        let deps = format!(
+            "genshi-core = {{ version = \"{ver}\", features = [\"serde\"] }}\n\
+             genshi-cli  = {{ version = \"{ver}\" }}"
+        );
+        let rendered = SCAFFOLD_CARGO_TOML
+            .replace("{{name}}", "test-crate")
+            .replace("{{deps}}", &deps);
+        assert!(rendered.contains(&format!("version = \"{ver}\"")));
+        assert!(!rendered.contains("git = "),
+            "crates-io scaffold must not contain git deps");
+    }
+
+    #[test]
     fn test_scaffold_readme_renders_name() {
         let rendered = SCAFFOLD_README.replace("{{name}}", "my-app");
         assert!(rendered.contains("# my-app"));
@@ -2133,9 +2425,11 @@ mod tests {
         assert!(crate_dir.join("README.md").exists());
         assert!(crate_dir.join(".gitignore").exists());
         assert!(crate_dir.join("src/lib.rs").exists());
+        assert!(crate_dir.join("src/witness.rs").exists());
         assert!(crate_dir.join("src/bin/genshi.rs").exists());
         assert!(crate_dir.join("src/circuits/mod.rs").exists());
         assert!(crate_dir.join("src/circuits/add.rs").exists());
+        assert!(crate_dir.join("src/circuits/hash_preimage.rs").exists());
         assert!(crate_dir.join("scripts/emit.sh").exists());
 
         // Verify content
@@ -2148,6 +2442,13 @@ mod tests {
 
         let add_rs = std::fs::read_to_string(crate_dir.join("src/circuits/add.rs")).unwrap();
         assert!(add_rs.contains("impl Circuit for AddCircuit"));
+
+        let hash_rs = std::fs::read_to_string(crate_dir.join("src/circuits/hash_preimage.rs")).unwrap();
+        assert!(hash_rs.contains("HashPreimageCircuit"));
+        assert!(hash_rs.contains("|json: &str|"));
+
+        let witness_rs = std::fs::read_to_string(crate_dir.join("src/witness.rs")).unwrap();
+        assert!(witness_rs.contains("HashPreimageWitnessJson"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&tmp);
