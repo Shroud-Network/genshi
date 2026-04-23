@@ -17,7 +17,16 @@ pub fn emit_program(config: &EmitConfig, srs: &SRS) -> Result<(), EmitError> {
         return Err(EmitError::NoCircuits);
     }
 
-    let src_dir = config.out_dir.join("src");
+    // Anchor 1.0 workspace layout:
+    //   <out_dir>/
+    //     Cargo.toml              ← [workspace] members = ["programs/*"]
+    //     Anchor.toml (optional)
+    //     programs/<program-name>/
+    //       Cargo.toml            ← [package]
+    //       Xargo.toml
+    //       src/…
+    let program_dir = config.out_dir.join("programs").join(&config.program_name);
+    let src_dir = program_dir.join("src");
     fs::create_dir_all(&src_dir)?;
 
     let circuits: Vec<(String, VerificationKey)> = config
@@ -30,8 +39,9 @@ pub fn emit_program(config: &EmitConfig, srs: &SRS) -> Result<(), EmitError> {
         })
         .collect::<Result<_, EmitError>>()?;
 
-    write_file(&config.out_dir.join("Cargo.toml"), &templates::cargo_toml::generate(config))?;
-    write_file(&config.out_dir.join("Xargo.toml"), &templates::xargo_toml::generate())?;
+    write_file(&config.out_dir.join("Cargo.toml"), &templates::workspace_toml::generate())?;
+    write_file(&program_dir.join("Cargo.toml"), &templates::cargo_toml::generate(config))?;
+    write_file(&program_dir.join("Xargo.toml"), &templates::xargo_toml::generate())?;
 
     write_file(&src_dir.join("lib.rs"), &templates::lib_rs::generate(config))?;
     write_file(&src_dir.join("verifier.rs"), &rewrite_verifier_imports(VERIFIER_SRC))?;
