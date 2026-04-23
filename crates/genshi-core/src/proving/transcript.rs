@@ -74,6 +74,7 @@ impl Transcript {
     }
 
     /// Absorb multiple scalar field elements, each with an indexed sub-label.
+    #[allow(dead_code)]
     pub fn absorb_scalars(&mut self, label: &[u8], scalars: &[Fr]) {
         for (i, s) in scalars.iter().enumerate() {
             let mut sub_label = Vec::from(label);
@@ -93,6 +94,7 @@ impl Transcript {
     }
 
     /// Absorb multiple G1 affine points, each with an indexed sub-label.
+    #[allow(dead_code)]
     pub fn absorb_points(&mut self, label: &[u8], points: &[G1Affine]) {
         for (i, p) in points.iter().enumerate() {
             let mut sub_label = Vec::from(label);
@@ -126,6 +128,7 @@ impl Transcript {
     }
 
     /// Squeeze multiple challenge scalars, each with an indexed sub-label.
+    #[allow(dead_code)]
     pub fn squeeze_challenges(&mut self, label: &[u8], count: usize) -> Vec<Fr> {
         let mut challenges = Vec::with_capacity(count);
         for i in 0..count {
