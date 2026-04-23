@@ -18,17 +18,56 @@ pub fn generate(config: &EmitConfig) -> String {
     let pid = config.program_id.as_deref().unwrap_or("11111111111111111111111111111112");
     writeln!(out, "declare_id!(\"{pid}\");").unwrap();
     writeln!(out).unwrap();
+    writeln!(out, "/// Maximum safe bytes per `write_buffer` / `init_and_write_buffer` call.").unwrap();
+    writeln!(out, "///").unwrap();
+    writeln!(out, "/// Solana's on-wire transaction hard cap is 1232 B. After subtracting").unwrap();
+    writeln!(out, "/// tx header + 1 signer + recent blockhash (~100 B), the Anchor method").unwrap();
+    writeln!(out, "/// discriminator (8 B), borsh `Vec<u8>` length prefixes (8 B), the").unwrap();
+    writeln!(out, "/// `tag` bytes, and a small safety margin, 900 B is the largest chunk").unwrap();
+    writeln!(out, "/// that always fits. Clients should size their writes to this value.").unwrap();
+    writeln!(out, "pub const MAX_CHUNK_SIZE: u32 = 900;").unwrap();
+    writeln!(out).unwrap();
     writeln!(out, "#[program]").unwrap();
     writeln!(out, "pub mod {mod_name} {{").unwrap();
     writeln!(out, "    use super::*;").unwrap();
 
-    // Buffer management instructions — shared across all circuits.
+    // Buffer management — shared across all circuits.
     writeln!(out).unwrap();
-    writeln!(out, "    /// Allocate a proof/public-inputs buffer PDA.").unwrap();
+    writeln!(out, "    /// Allocate a proof/public-inputs buffer PDA and write the first chunk").unwrap();
+    writeln!(out, "    /// in one fused instruction.").unwrap();
     writeln!(out, "    ///").unwrap();
-    writeln!(out, "    /// The payer owns the PDA until it is closed. `tag` lets callers").unwrap();
-    writeln!(out, "    /// keep multiple buffers alive in parallel (e.g. `b\"proof\"`,").unwrap();
-    writeln!(out, "    /// `b\"pi\"`). `size` is the total byte capacity reserved.").unwrap();
+    writeln!(out, "    /// This is the preferred entry point — it saves one transaction per").unwrap();
+    writeln!(out, "    /// buffer versus calling `init_buffer` + `write_buffer` separately. Use").unwrap();
+    writeln!(out, "    /// follow-up `write_buffer` calls only when the total payload exceeds").unwrap();
+    writeln!(out, "    /// `MAX_CHUNK_SIZE` bytes.").unwrap();
+    writeln!(out, "    ///").unwrap();
+    writeln!(out, "    /// - `tag` distinguishes buffers owned by the same payer (e.g. `b\"p\"`,").unwrap();
+    writeln!(out, "    ///   `b\"i\"` for proof and public inputs).").unwrap();
+    writeln!(out, "    /// - `size` is the total byte capacity reserved.").unwrap();
+    writeln!(out, "    /// - `offset` + `chunk.len()` must be `<= size`.").unwrap();
+    writeln!(out, "    pub fn init_and_write_buffer(").unwrap();
+    writeln!(out, "        ctx: Context<InitBuffer>,").unwrap();
+    writeln!(out, "        tag: Vec<u8>,").unwrap();
+    writeln!(out, "        size: u32,").unwrap();
+    writeln!(out, "        offset: u32,").unwrap();
+    writeln!(out, "        chunk: Vec<u8>,").unwrap();
+    writeln!(out, "    ) -> Result<()> {{").unwrap();
+    writeln!(out, "        let buf = &mut ctx.accounts.buffer;").unwrap();
+    writeln!(out, "        buf.owner = ctx.accounts.payer.key();").unwrap();
+    writeln!(out, "        buf.tag = tag;").unwrap();
+    writeln!(out, "        buf.len = size;").unwrap();
+    writeln!(out, "        buf.data = vec![0u8; size as usize];").unwrap();
+    writeln!(out, "        let off = offset as usize;").unwrap();
+    writeln!(out, "        let end = off.checked_add(chunk.len()).ok_or(error!(ErrorCode::BufferOverflow))?;").unwrap();
+    writeln!(out, "        require!(end <= buf.data.len(), ErrorCode::BufferOverflow);").unwrap();
+    writeln!(out, "        buf.data[off..end].copy_from_slice(&chunk);").unwrap();
+    writeln!(out, "        Ok(())").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "    /// Allocate a proof/public-inputs buffer PDA without writing any data.").unwrap();
+    writeln!(out, "    ///").unwrap();
+    writeln!(out, "    /// Prefer `init_and_write_buffer` unless you specifically need to").unwrap();
+    writeln!(out, "    /// separate allocation from the first write.").unwrap();
     writeln!(out, "    pub fn init_buffer(ctx: Context<InitBuffer>, tag: Vec<u8>, size: u32) -> Result<()> {{").unwrap();
     writeln!(out, "        let buf = &mut ctx.accounts.buffer;").unwrap();
     writeln!(out, "        buf.owner = ctx.accounts.payer.key();").unwrap();
@@ -38,7 +77,10 @@ pub fn generate(config: &EmitConfig) -> String {
     writeln!(out, "        Ok(())").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    /// Write a chunk of bytes into a buffer at `offset`.").unwrap();
+    writeln!(out, "    /// Write an additional chunk into a buffer at `offset`.").unwrap();
+    writeln!(out, "    ///").unwrap();
+    writeln!(out, "    /// Use this only when the total payload exceeds `MAX_CHUNK_SIZE` bytes.").unwrap();
+    writeln!(out, "    /// The first chunk should go through `init_and_write_buffer`.").unwrap();
     writeln!(out, "    pub fn write_buffer(ctx: Context<WriteBuffer>, offset: u32, chunk: Vec<u8>) -> Result<()> {{").unwrap();
     writeln!(out, "        let buf = &mut ctx.accounts.buffer;").unwrap();
     writeln!(out, "        require_keys_eq!(buf.owner, ctx.accounts.owner.key(), ErrorCode::BufferOwnerMismatch);").unwrap();
@@ -50,25 +92,37 @@ pub fn generate(config: &EmitConfig) -> String {
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    /// Close a buffer, refunding rent to the owner.").unwrap();
+    writeln!(out, "    ///").unwrap();
+    writeln!(out, "    /// Normally you don't need this — `verify_<circuit>_and_close` closes").unwrap();
+    writeln!(out, "    /// both buffers automatically after a successful verification. Use this").unwrap();
+    writeln!(out, "    /// only to clean up buffers from an abandoned/errored flow.").unwrap();
     writeln!(out, "    pub fn close_buffer(_ctx: Context<CloseBuffer>) -> Result<()> {{").unwrap();
     writeln!(out, "        Ok(())").unwrap();
     writeln!(out, "    }}").unwrap();
 
     for circuit in &config.circuits {
-        let fn_name = format!("verify_{}", circuit.name);
         let fn_name_buf = format!("verify_{}_from_buffers", circuit.name);
+        let fn_name_close = format!("verify_{}_and_close", circuit.name);
 
         writeln!(out).unwrap();
-        writeln!(out, "    /// Inline verifier for `{}`. Use this when the proof + public", circuit.name).unwrap();
-        writeln!(out, "    /// inputs fit inside a single Solana transaction (~1 KB total).").unwrap();
-        writeln!(out, "    pub fn {fn_name}(_ctx: Context<Verify>, proof_bytes: Vec<u8>, public_inputs_bytes: Vec<u8>) -> Result<()> {{").unwrap();
-        writeln!(out, "        super::verify_{}_impl(&proof_bytes, &public_inputs_bytes)", circuit.name).unwrap();
+        writeln!(out, "    /// Verify a `{}` proof from streamed buffer PDAs.", circuit.name).unwrap();
+        writeln!(out, "    ///").unwrap();
+        writeln!(out, "    /// The proof PDA should be streamed via `init_and_write_buffer`").unwrap();
+        writeln!(out, "    /// + optional `write_buffer` calls; the public-inputs PDA likewise.").unwrap();
+        writeln!(out, "    /// Prefer `{fn_name_close}` for one-shot verify-and-reclaim-rent flows;").unwrap();
+        writeln!(out, "    /// use this variant when you want to reuse the buffers.").unwrap();
+        writeln!(out, "    pub fn {fn_name_buf}(ctx: Context<VerifyFromBuffers>) -> Result<()> {{").unwrap();
+        writeln!(out, "        let proof_data = ctx.accounts.proof_buffer.data.clone();").unwrap();
+        writeln!(out, "        let pi_data = ctx.accounts.public_inputs_buffer.data.clone();").unwrap();
+        writeln!(out, "        super::verify_{}_impl(&proof_data, &pi_data)", circuit.name).unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
-        writeln!(out, "    /// Buffer-PDA verifier for `{}`. Use this when the proof exceeds", circuit.name).unwrap();
-        writeln!(out, "    /// the 1232-byte transaction limit. Stream the proof into one PDA").unwrap();
-        writeln!(out, "    /// and public inputs into another via `write_buffer`, then call this.").unwrap();
-        writeln!(out, "    pub fn {fn_name_buf}(ctx: Context<VerifyFromBuffers>) -> Result<()> {{").unwrap();
+        writeln!(out, "    /// Verify a `{}` proof and close both buffer PDAs in one ix.", circuit.name).unwrap();
+        writeln!(out, "    ///").unwrap();
+        writeln!(out, "    /// This is the preferred entry point for one-shot flows — saves two").unwrap();
+        writeln!(out, "    /// transactions (`close_buffer` × 2) per verification. If verification").unwrap();
+        writeln!(out, "    /// fails the buffers are *not* closed, so clients can retry.").unwrap();
+        writeln!(out, "    pub fn {fn_name_close}(ctx: Context<VerifyAndClose>) -> Result<()> {{").unwrap();
         writeln!(out, "        let proof_data = ctx.accounts.proof_buffer.data.clone();").unwrap();
         writeln!(out, "        let pi_data = ctx.accounts.public_inputs_buffer.data.clone();").unwrap();
         writeln!(out, "        super::verify_{}_impl(&proof_data, &pi_data)", circuit.name).unwrap();
@@ -77,7 +131,7 @@ pub fn generate(config: &EmitConfig) -> String {
 
     writeln!(out, "}}").unwrap();
 
-    // Helper impls — live outside `#[program]` so Anchor doesn't treat them
+    // Helper impls live outside `#[program]` so Anchor doesn't treat them
     // as fallback instruction handlers.
     for circuit in &config.circuits {
         let vk_loader = format!("load_{}_vk", circuit.name);
@@ -102,9 +156,6 @@ pub fn generate(config: &EmitConfig) -> String {
         writeln!(out, "}}").unwrap();
     }
 
-    writeln!(out).unwrap();
-    writeln!(out, "#[derive(Accounts)]").unwrap();
-    writeln!(out, "pub struct Verify {{}}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "#[account]").unwrap();
     writeln!(out, "pub struct Buffer {{").unwrap();
@@ -152,6 +203,24 @@ pub fn generate(config: &EmitConfig) -> String {
     writeln!(out, "pub struct VerifyFromBuffers<'info> {{").unwrap();
     writeln!(out, "    pub proof_buffer: Account<'info, Buffer>,").unwrap();
     writeln!(out, "    pub public_inputs_buffer: Account<'info, Buffer>,").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "#[derive(Accounts)]").unwrap();
+    writeln!(out, "pub struct VerifyAndClose<'info> {{").unwrap();
+    writeln!(out, "    #[account(").unwrap();
+    writeln!(out, "        mut,").unwrap();
+    writeln!(out, "        close = owner,").unwrap();
+    writeln!(out, "        has_one = owner @ ErrorCode::BufferOwnerMismatch,").unwrap();
+    writeln!(out, "    )]").unwrap();
+    writeln!(out, "    pub proof_buffer: Account<'info, Buffer>,").unwrap();
+    writeln!(out, "    #[account(").unwrap();
+    writeln!(out, "        mut,").unwrap();
+    writeln!(out, "        close = owner,").unwrap();
+    writeln!(out, "        has_one = owner @ ErrorCode::BufferOwnerMismatch,").unwrap();
+    writeln!(out, "    )]").unwrap();
+    writeln!(out, "    pub public_inputs_buffer: Account<'info, Buffer>,").unwrap();
+    writeln!(out, "    #[account(mut)]").unwrap();
+    writeln!(out, "    pub owner: Signer<'info>,").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "#[error_code]").unwrap();
